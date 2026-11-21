@@ -155,6 +155,23 @@ local EXTRA_QUESTS =
     { 'scripts/quests/jeuno/The_Circle_of_Time',             J.BRD }, -- BRD AF3
     { 'scripts/quests/outlands/Ill_Take_the_Big_Box',        J.NIN }, -- NIN AF2
     { 'scripts/quests/sandoria/Chasing_Quotas',              J.DRG }, -- DRG AF2
+    -- (2026-11-21, Tasou: Guslam would not give Borghertz's Healing Hands with a WHM mate out) the Borghertz hands quests
+    -- ask for the job inside Guslam's trigger, and his cutscene's finish asks again, so their event finishes are wrapped too
+    { 'scripts/quests/jeuno/Borghertzs_Warring_Hands', J.WAR, true },
+    { 'scripts/quests/jeuno/Borghertzs_Striking_Hands', J.MNK, true },
+    { 'scripts/quests/jeuno/Borghertzs_Healing_Hands', J.WHM, true },
+    { 'scripts/quests/jeuno/Borghertzs_Sorcerous_Hands', J.BLM, true },
+    { 'scripts/quests/jeuno/Borghertzs_Vermillion_Hands', J.RDM, true },
+    { 'scripts/quests/jeuno/Borghertzs_Sneaky_Hands', J.THF, true },
+    { 'scripts/quests/jeuno/Borghertzs_Stalwart_Hands', J.PLD, true },
+    { 'scripts/quests/jeuno/Borghertzs_Shadowy_Hands', J.DRK, true },
+    { 'scripts/quests/jeuno/Borghertzs_Wild_Hands', J.BST, true },
+    { 'scripts/quests/jeuno/Borghertzs_Harmonious_Hands', J.BRD, true },
+    { 'scripts/quests/jeuno/Borghertzs_Chasing_Hands', J.RNG, true },
+    { 'scripts/quests/jeuno/Borghertzs_Loyal_Hands', J.SAM, true },
+    { 'scripts/quests/jeuno/Borghertzs_Lurking_Hands', J.NIN, true },
+    { 'scripts/quests/jeuno/Borghertzs_Dragon_Hands', J.DRG, true },
+    { 'scripts/quests/jeuno/Borghertzs_Calling_Hands', J.SMN, true },
 }
 
 local LEGACY_NPCS =
@@ -221,12 +238,18 @@ local function modifyQuest(path, change)
     end
 end
 
-local function wrapTriggers(quest, job, label)
+local function wrapTriggers(quest, job, label, events)
     for _, section in ipairs(quest.sections) do
         for zoneKey, zone in pairs(section) do
             if type(zoneKey) == 'number' and type(zone) == 'table' then
                 for npcName, entry in pairs(zone) do
-                    if type(npcName) == 'string' and type(entry) == 'table' then
+                    if events and (npcName == 'onEventFinish' or npcName == 'onEventUpdate') and type(entry) == 'table' then
+                        for csid, handler in pairs(entry) do
+                            if type(handler) == 'function' then
+                                entry[csid] = withMateJob(handler, job, label)
+                            end
+                        end
+                    elseif type(npcName) == 'string' and type(entry) == 'table' then
                         for _, handler in ipairs({ 'onTrigger', 'onTrade' }) do
                             if type(rawget(entry, handler)) == 'function' then
                                 entry[handler] = withMateJob(entry[handler], job, label)
@@ -273,7 +296,7 @@ m:addOverride('xi.server.onServerStart', function()
     end
 
     for _, row in ipairs(EXTRA_QUESTS) do
-        local path, job = row[1], row[2]
+        local path, job, events = row[1], row[2], row[3]
         local ok, problem = pcall(function()
             modifyQuest(path, function(quest)
                 for _, section in ipairs(quest.sections) do
@@ -282,7 +305,7 @@ m:addOverride('xi.server.onServerStart', function()
                     end
                 end
 
-                wrapTriggers(quest, job, path)
+                wrapTriggers(quest, job, path, events)
             end)
         end)
 

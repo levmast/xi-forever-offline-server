@@ -364,6 +364,27 @@ end
 -- the brain: one decision per second per bot
 -----------------------------------
 local state = {} -- [bot id] = { mode = 'follow'|'stay', attacking = target id, life = town plan, hunt = field plan }
+
+-- a bot that leaves a party on purpose (a teleport job done, its own plans) forgets who it played with, so the
+-- zone-change rejoin in think() never pulls it back in. (Wrapped at the first brain start: the C++ side registers
+-- BotLeaveParty after this file is loaded.)
+local leaveWrapped = false
+local function wrapLeaveParty()
+    if leaveWrapped or type(BotLeaveParty) ~= 'function' then
+        return
+    end
+
+    leaveWrapped = true
+    local rawLeaveParty = BotLeaveParty
+    BotLeaveParty = function(id, ...)
+        local s = state[id]
+        if s then
+            s.withName, s.withLostAt = nil, nil
+        end
+
+        return rawLeaveParty(id, ...)
+    end
+end
 if bcnm then
     bcnm.setup(state, hunt, craft)
 end
@@ -739,6 +760,34 @@ think = function(bot, token)
         if leader == nil then
             schedule(bot, token)
             return
+        end
+    end
+
+    -- (2026-11-21, Sunie: a bot that joined by tell while her squad mate was out dropped out of the party when she
+    -- zoned, and never followed) remember who it plays with; if the party is gone right after either of them changed
+    -- area (not a kick or a leave: those happen in one area, and BotLeaveParty below forgets the player first), join
+    -- that player again and keep following.
+    if leader then
+        st.withName, st.withZone, st.myZone, st.withLostAt = leader:getName(), leader:getZoneID(), bot:getZoneID(), nil
+    elseif st.withName and st.mode == 'follow' then
+        st.withLostAt = st.withLostAt or os.time()
+        local p = GetPlayerByName(st.withName)
+        if p then
+            local zoned = p:getZoneID() ~= st.withZone or bot:getZoneID() ~= st.myZone
+            local name = st.withName
+            st.withName, st.withLostAt = nil, nil
+            if zoned and bot:getPartySize() <= 1 and BotJoinParty and BotJoinParty(id, p:getID()) then
+                print(string.format('[bots] %s lost %s\'s party on a zone change and joined again', bot:getName(), name))
+                st.awaySince, st.attacking = nil, nil
+                if p:getZoneID() == bot:getZoneID() then
+                    BotFollow(id, p, 3)
+                end
+
+                schedule(bot, token)
+                return
+            end
+        elseif os.time() - st.withLostAt > 60 then
+            st.withName, st.withLostAt = nil, nil
         end
     end
 
@@ -1122,6 +1171,7 @@ local loginCount = 0
 
 -- a new brain (after a login or a zone change: the old character object and its timers are gone)
 local function startBrain(bot, delay, hello)
+    wrapLeaveParty()
     loginCount = loginCount + 1
     local token = loginCount
     local st = state[bot:getID()] or { mode = 'follow' }

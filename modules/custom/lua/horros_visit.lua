@@ -121,7 +121,7 @@ local CITIES =
     [xi.zone.SOUTHERN_SAN_DORIA] =
     {
         key = 'Slarin', name = 'Slarin', camp = xi.zone.EAST_RONFAURE,
-        pos = { 46.5, 1.6, -32.4, 170 }, horro = { 44.22, 1.63, -32.1, 170 }, back = { 45.36, 1.6, -32.25, 170 }, where = 'by the Home Point near the Lion Springs Tavern',
+        pos = { 46.5, 1.6, -32.4, 170 }, horro = { 44.22, 1.63, -32.1, 170 }, back = { 45.36, 1.6, -32.25, 170 }, where = 'next to Home Point #2 (a short walk east of the Auction House)',
     },
     [xi.zone.BASTOK_MARKETS] =
     {

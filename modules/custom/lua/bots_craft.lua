@@ -873,6 +873,22 @@ local BITE_EVERY = { 20, 55 }            -- seconds between two bites
 local FISH_HOME = { [0] = { 232 }, [1] = { 236 }, [2] = { 240 } }
 local ANIM_FISHING, ANIM_CAUGHT, ANIM_STOP = 38, 39, 43
 
+-- (2026-11-21, Sunie: a bot fishing in the middle of Port San d'Oria) bot players fish only at spots marked at the
+-- water with !crowd mark fish (crowds_spots_user.lua). Before, any of the crowd's standing spots in the port was
+-- used, most of them nowhere near the water. A town with no fishing spot marked has no bots fishing.
+local function fishSpots(zoneId)
+    local out = {}
+    if xi.crowds and xi.crowds.zoneSpots then
+        for _, s in ipairs(xi.crowds.zoneSpots(zoneId) or {}) do
+            if s.kind == 'fish' then
+                out[#out + 1] = s
+            end
+        end
+    end
+
+    return out
+end
+
 local function fishZones(bot)
     local ok, nation = pcall(function()
         return bot:getNation()
@@ -890,7 +906,7 @@ local function fishZones(bot)
 
     local out = {}
     for _, z in ipairs(list) do
-        if (craftData().fishing or {})[z] then
+        if (craftData().fishing or {})[z] and #fishSpots(z) > 0 then
             out[#out + 1] = z
         end
     end
@@ -911,12 +927,7 @@ local function startFish(bot, st, p)
     end
 
     local zoneId = pick(zones)
-    local spots = {}
-    for _, s in ipairs(xi.crowds.zoneSpots(zoneId) or {}) do
-        if s.kind == 'idle' then
-            spots[#spots + 1] = s
-        end
-    end
+    local spots = fishSpots(zoneId)
 
     if #spots == 0 then
         return false

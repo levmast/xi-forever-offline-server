@@ -2345,6 +2345,7 @@ local function callMate(player, mate)
             seen[mobArg:getLocalVar('SQUAD_ID')] = os.time()
         end
 
+        pcall(squadCutsceneTick, mobArg, owner)
         campTick(mobArg)
         if restTick ~= nil then
             restTick(mobArg)
@@ -2376,6 +2377,32 @@ local function callMate(player, mate)
     end)
 
     return trust
+end
+
+-- (2026-11-21, lilibun: mates standing in the middle of cutscenes) while you are in a cutscene or talking to an NPC for
+-- more than a moment, your squad mates are hidden; they show again the moment it ends. (The short wait keeps them from
+-- blinking out for a one-line chat.) A global: squad.lua is near Lua's 200-local limit.
+SQUAD_CS_HIDE_AFTER = 2 -- seconds in an event before the mates are hidden
+function squadCutsceneTick(mob, owner)
+    local hidden = mob:getLocalVar('SQUAD_CS_HIDDEN') == 1
+    local inEvent = owner ~= nil and owner:isInEvent() and mob:isAlive()
+    if inEvent then
+        local since = mob:getLocalVar('SQUAD_CS_SINCE')
+        if since == 0 then
+            mob:setLocalVar('SQUAD_CS_SINCE', os.time())
+        elseif not hidden and os.time() - since >= SQUAD_CS_HIDE_AFTER and mob:getStatus() == xi.status.NORMAL then
+            mob:setLocalVar('SQUAD_CS_HIDDEN', 1)
+            mob:setStatus(xi.status.INVISIBLE)
+        end
+    else
+        mob:setLocalVar('SQUAD_CS_SINCE', 0)
+        if hidden then
+            mob:setLocalVar('SQUAD_CS_HIDDEN', 0)
+            if mob:getStatus() == xi.status.INVISIBLE then
+                mob:setStatus(xi.status.NORMAL)
+            end
+        end
+    end
 end
 
 -- Summon cooldown: after a squad mate is called with !squad call, that mate cannot be called again for
@@ -3892,6 +3919,29 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         table.sort(found, function(x, y)
             return x.level > y.level or (x.level == y.level and x.name < y.name)
         end)
+
+        -- (2026-11-21, Tasou/Yache) with "Squad gets all gear" on, the rest of the list is every piece this mate can
+        -- wear in the slot, best first, after the pieces you gave (needs the xi_map with GetSquadGearChoices)
+        if squadAllGear() and type(GetSquadGearChoices) == 'function' then
+            local listed = {}
+            for _, f in ipairs(found) do
+                listed[f.id] = true
+            end
+
+            local ok, choices = pcall(GetSquadGearChoices, eq, mate.mjob, mainLevel, 80)
+            if ok and type(choices) == 'table' then
+                for _, c in ipairs(choices) do
+                    if #found >= 40 then
+                        break
+                    end
+
+                    if not listed[c.id] then
+                        listed[c.id] = true
+                        found[#found + 1] = { id = c.id, level = c.level, name = c.name }
+                    end
+                end
+            end
+        end
 
         for k = 1, math.min(#found, 40) do
             say(player, string.format('squadpanel:gl|%d|%d|%d|%d|%s', mate.slot, eq, found[k].id, found[k].level, found[k].name))
@@ -5552,6 +5602,18 @@ for _, name in ipairs(templates) do
 end
 
 -- Template trust speeches (like Naji's battle cries) are skipped for squad mates, whatever their job
+-- (2026-11-21, sparkiie: a Ninja mate's Mijin Gakure did its damage but the mate lived) the ability ends with
+-- player:die(), which only works on a player character; for anyone else it only logged a warning. A squad mate (a trust)
+-- falls the way a player does: its HP goes to 0 after the blow.
+m:addOverride('xi.job_utils.ninja.useMijinGakure', function(player, target, ability, action)
+    local dmg = super(player, target, ability, action)
+    if player:getObjType() ~= xi.objType.PC and player:isAlive() then
+        player:setHP(0)
+    end
+
+    return dmg
+end)
+
 m:addOverride('xi.trust.message', function(mob, messageOffset)
     if mob:getLocalVar('SQUAD_ID') > 0 then
         return
