@@ -3,9 +3,9 @@
 -----------------------------------
 -- The launcher's CONFIG > Rates "Seasonal events" setting, written to events_config.lua every launch:
 --   date = each event runs on its own dates (default)
---   on   = Harvest Festival, Starlight Celebration, Egg Hunt and Horro's Visit run all year
+--   on   = Harvest Festival, Starlight Celebration, Egg Hunt, Horro's Visit and the Sunbreeze Festival run all year
 --   off  = no seasonal events
--- Each event also has its own launcher switch (harvest, starlight, egg_hunt, horro): off = that one never runs.
+-- Each event also has its own launcher switch (harvest, starlight, egg_hunt, horro, sunbreeze): off = that one never runs.
 -- Mog Bonanza and Strange Happenings are never forced on (they keep their own switches); Off stops them too.
 -- No core scripts are changed: the events' own date checks are wrapped at server start.
 -----------------------------------

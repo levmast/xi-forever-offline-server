@@ -114,6 +114,9 @@ custom/lua/horros_visit.lua
 # Starlight Celebration things to do (ported from AirSkyBoat): presents, greetings, Goblin Merrymakers, Boot Camp, token and vendor moogles
 custom/lua/starlight_smilebringers.lua
 
+# Sunbreeze Festival (August): swimwear and yukata moogles, goldfish scooping for points
+custom/lua/sunbreeze.lua
+
 # Goblin Tailor: any race
 custom/lua/rse.lua
 
