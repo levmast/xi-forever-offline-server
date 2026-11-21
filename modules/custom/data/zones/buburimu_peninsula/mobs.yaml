@@ -1,0 +1,72 @@
+# FFXI Offline: no Goblin Bounty Hunters (levi asked to remove them).
+# "template: null" disables the spawn (merge patch); the script name stays so IDs.lua's GetFirstID still resolves.
+
+spawns:
+
+  17261085:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261086:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261087:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261088:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261089:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261090:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261091:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261092:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261093:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261094:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261095:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261096:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261097:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261098:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261099:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261100:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17261101:
+    template: null
+    script:   Goblin_Bounty_Hunter
