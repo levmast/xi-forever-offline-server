@@ -1,0 +1,22 @@
+# FFXI Offline: Mee Deggi the Punisher and Quu Domi the Gallant drop the sellable versions of their rare gear.
+# Ochimusha Kote -> Ochiudo's Kote and Sarutobi Kyahan -> Fuma Kyahan (same stats, not Rare/Ex; the
+# Divine Punishers BCNM already drops these). Drop rates match the phoenix module (Mee Deggi) and core (Quu Domi).
+# drops is a list, so this replaces each NM's whole drop list (merge patch); steal and the rest are kept.
+
+templates:
+
+  Mee_Deggi_the_Punisher:
+    loot:
+      drops:
+        - chance: always
+          one_of:
+            impact_knuckles: 90
+            ochiudos_kote:   10
+
+  Quu_Domi_the_Gallant:
+    loot:
+      drops:
+        - chance: always
+          one_of:
+            strider_sword: 90
+            fuma_kyahan:   10
