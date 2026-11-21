@@ -23,6 +23,7 @@
 
 #include "ai/ai_container.h"
 #include "common/timer.h"
+#include "common/xirand.h"
 #include "common/vana_time.h"
 #include "data/enums/weather.h"
 #include "entities/mob_entity.h"
@@ -266,6 +267,55 @@ void SpawnHandler::onGameHour(const uint32 hour) const
                 PMob->SetDespawnTime(1ms);
             }
         });
+
+    // (XI: Forever Offline, 2026-11-20) A mob with a spawn window (e.g. a night-only Ghoul) that shares a slot with an
+    // unrestricted mob (e.g. a Goblin) used to show up only if the Goblin was killed inside the window, and then only
+    // on a random roll. When the window opens, an idle unrestricted slot-mate now steps aside and a windowed member
+    // takes its place. Lottery members (spawn chance > 0) and mobs in combat are left alone.
+    for (const auto& slotPair : spawnSlots_)
+    {
+        SpawnSlot* slot = slotPair.second.get();
+        if (!slot)
+        {
+            continue;
+        }
+
+        CMobEntity*              spawned = nullptr;
+        std::vector<CMobEntity*> candidates;
+
+        for (const auto& entry : slot->GetEntries())
+        {
+            CMobEntity* PMob = entry.mob;
+            if (!PMob || !PMob->PAI)
+            {
+                continue;
+            }
+
+            if (PMob->PAI->IsSpawned())
+            {
+                spawned = PMob;
+                continue;
+            }
+
+            const auto window = spawnWindowOf(PMob);
+            if (window.has_value() && window->spawnHour == hour && entry.spawnChance == 0 && entry.readyAt <= timer::now() &&
+                canSpawnNow(PMob) && luautils::OnMobSpawnCheck(PMob) == 0)
+            {
+                candidates.push_back(PMob);
+            }
+        }
+
+        if (!spawned || candidates.empty() || spawnWindowOf(spawned).has_value() || !spawned->isAlive() || spawned->PAI->IsEngaged())
+        {
+            continue;
+        }
+
+        spawned->SetDespawnTime(1ms);
+
+        CMobEntity* PNew     = xirand::GetRandomElement(candidates);
+        PNew->m_AllowRespawn = true;
+        PNew->Spawn();
+    }
 }
 
 // On Weather change, process all relevant despawns.
