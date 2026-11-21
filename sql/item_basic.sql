@@ -2007,7 +2007,7 @@ INSERT INTO `item_basic` VALUES (2010,0,'square_of_wolf_felt','wolf_felt','ウ�
 INSERT INTO `item_basic` VALUES (2011,0,'clump_of_wolf_fur','wolf_fur','狼毛',@GENERAL_TYPE,12,@FLAG_MYSTERY_BOX,@CLOTHCRAFT,354);
 INSERT INTO `item_basic` VALUES (2012,0,'square_of_laminated_ram_leather','lm._rm._leather','雄羊の撓革',@GENERAL_TYPE,12,@FLAG_MYSTERY_BOX,@LEATHERCRAFT,587);
 INSERT INTO `item_basic` VALUES (2013,0,'vial_of_lizard_blood','lizard_blood','トカゲの血',@GENERAL_TYPE,12,@FLAG_MYSTERY_BOX,@ALCHEMY,396);
-INSERT INTO `item_basic` VALUES (2014,0,'vial_of_bird_blood','bird_blood','鳥の血',@GENERAL_TYPE,12,@FLAG_MYSTERY_BOX,@ALCHEMY,167);
+INSERT INTO `item_basic` VALUES (2014,0,'vial_of_bird_blood','bird_blood','鳥の血',@GENERAL_TYPE,12,@FLAG_MYSTERY_BOX,@ALCHEMY,400);
 INSERT INTO `item_basic` VALUES (2015,0,'vial_of_beast_blood','beast_blood','獣の血',@GENERAL_TYPE,12,@FLAG_MYSTERY_BOX,@ALCHEMY,273);
 INSERT INTO `item_basic` VALUES (2016,0,'lump_of_loam','loam','黒土',@GENERAL_TYPE,12,@FLAG_MYSTERY_BOX,@MISC,379);
 INSERT INTO `item_basic` VALUES (2017,0,'amour_chocolate_left_piece','amour_choco._l.','恋するチョコ・Ｌ',@GENERAL_TYPE,1,@FLAG_NOAUCTION | @FLAG_NOSALE | @FLAG_NODELIVERY | @FLAG_EX | @FLAG_RARE,@NONE,0);
