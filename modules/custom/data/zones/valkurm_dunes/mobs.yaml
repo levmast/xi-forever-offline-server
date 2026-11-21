@@ -10,3 +10,56 @@ templates:
           item:   insect_wing
         - chance: common
           item:   emperor_hairpin
+
+# FFXI Offline: no Goblin Bounty Hunters (levi asked to remove them).
+# "template: null" disables the spawn (merge patch); the script name stays so IDs.lua's GetFirstID still resolves.
+
+spawns:
+
+  17199647:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199648:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199649:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199650:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199651:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199652:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199653:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199654:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199655:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199656:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199657:
+    template: null
+    script:   Goblin_Bounty_Hunter
+
+  17199658:
+    template: null
+    script:   Goblin_Bounty_Hunter
