@@ -570,7 +570,11 @@ void CEntityUpdatePacket::updateWith(CBaseEntity* PEntity, ENTITYUPDATE type, ui
     // XI: Forever Offline (2026-11-18, sparkiie): also for a later update that carries the look. The plain renamed layout
     // below writes the name at 0x34, inside the 20-byte equipped look, so a squad mate whose look was re-sent (zoning,
     // level ups, sync) showed random armor (an apron) or nothing; this layout keeps the look whole and the name after it.
-    if ((type == ENTITY_SPAWN || (updatemask & UPDATE_LOOK)) && PEntity->isRenamed && PEntity->look.size == MODEL_EQUIPPED && PEntity->targid >= 0x700)
+    // XI: Forever Offline (2026-11-20, levi: squad mates sometimes spawned naked): look at the flags already in the packet too,
+    // not just this call's. A squad mate is renamed right after it spawns, and when that name update is merged into the
+    // still-unsent spawn packet (which carries the look), this call's mask has no UPDATE_LOOK, so the plain layout below
+    // wrote the name over the armor of the spawn packet. (0x20 marks a despawn, which must keep its own flags.)
+    if ((type == ENTITY_SPAWN || (updatemask & UPDATE_LOOK) || (type != ENTITY_DESPAWN && (ref<uint8>(0x0A) & 0x30) == UPDATE_LOOK)) && PEntity->isRenamed && PEntity->look.size == MODEL_EQUIPPED && PEntity->targid >= 0x700)
     {
         this->setSize(0x56);
 
