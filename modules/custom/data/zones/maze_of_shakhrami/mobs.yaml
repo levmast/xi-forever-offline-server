@@ -1,0 +1,16 @@
+# FFXI Offline: Argus drops the sellable Peacock Charm instead of Rare/Ex Peacock Amulet (same stats).
+# Same list and rates as core; drops is a list, so this replaces the whole drop list.
+
+templates:
+
+  Argus:
+    loot:
+      drops:
+        - chance: always
+          item:   vial_of_mercury
+        - chance: very_common
+          item:   hecteyes_eye
+        - chance: very_common
+          item:   hecteyes_eye
+        - chance: very_common
+          item:   peacock_charm
