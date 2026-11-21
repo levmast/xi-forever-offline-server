@@ -174,6 +174,14 @@ void CZoneEntities::TryAddToNearbySpawnLists(CBaseEntity* PEntity)
     {
         const auto isInRange = isWithinDistance(PEntity->loc.p, PCurrentChar->loc.p, ENTITY_RENDER_DISTANCE);
 
+        // FFXI Offline (2026-11-21, Velderen, Trinity): a player in a Mog House only sees the room. An entity made
+        // while they are inside (a town crowd NPC arriving, a mob, a pet) was drawn in the room when it was made
+        // near the Mog House door; SpawnNPCs and the other spawn passes already skip a player in a Mog House.
+        if (PCurrentChar->inMogHouse() && PEntity->objtype != TYPE_PC)
+        {
+            continue;
+        }
+
         if (isInRange)
         {
             // Exclude NPCs from vertical rendering limits (elevators may go past the normal vertical range)

@@ -245,9 +245,20 @@ end
 local SHOUT = 1
 local SAY = 0
 
+-- (2026-11-21, Trinity: crowd chatter heard inside the Mog House) like real /say and /shout, the town's chatter
+-- does not reach a player in a Mog House
+local function inMogHouse(p)
+    local ok, inside = pcall(function()
+        return p:inMogHouse()
+    end)
+    return ok and inside == true
+end
+
 local function sendShout(players, name, text)
     for _, p in ipairs(players) do
-        p:printToPlayer(text, (xi.msg and xi.msg.channel and xi.msg.channel.SHOUT) or SHOUT, name)
+        if not inMogHouse(p) then
+            p:printToPlayer(text, (xi.msg and xi.msg.channel and xi.msg.channel.SHOUT) or SHOUT, name)
+        end
     end
 end
 
@@ -255,7 +266,7 @@ local function sendSay(players, x, z, name, text)
     local heard = 0
     for _, p in ipairs(players) do
         local pos = p:getPos()
-        if env.dist2(pos.x, pos.z, x, z) <= SAY_RANGE * SAY_RANGE then
+        if not inMogHouse(p) and env.dist2(pos.x, pos.z, x, z) <= SAY_RANGE * SAY_RANGE then
             p:printToPlayer(text, (xi.msg and xi.msg.channel and xi.msg.channel.SAY) or SAY, name)
             heard = heard + 1
         end

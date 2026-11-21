@@ -208,6 +208,13 @@ xi.settings.main =
     -- Multiplier to NM lottery cooldown time (Default 1.0) eg. 2.0 = twice as long. 0 = no cooldowns.
     NM_LOTTERY_COOLDOWN = 1.0,
 
+    -- XI: Forever Offline, Tetra Master (modules/custom/lua/tetramaster.lua): multipliers on the chances and prices in
+    -- modules/custom/lua/tetramaster_data.lua. 1.0 = as that file says, 0 = none. Set from the launcher (Rules > Tetra Master).
+    TM_CARD_DROP_RATE   = 1.0, -- cards from monsters and notorious monsters
+    TM_CASKET_CARD_RATE = 1.0, -- cards from treasure caskets
+    TM_GIL_RATE         = 1.0, -- gil for winning a match
+    TM_PRICE_RATE       = 1.0, -- what card traders charge
+
     -- GARRISON SETTINGS
     ENABLE_GARRISON        = true,  -- If true, enables garrison functionality
     GARRISON_LOCKOUT       = 1800,  -- Time in seconds before a new garrison can be started (default: 1800)

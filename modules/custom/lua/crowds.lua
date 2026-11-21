@@ -14,7 +14,7 @@
 --         !crowd on|off     switch on/off now (until the next PLAY)
 --         !crowd count N    crowd size now (0-40, until the next PLAY)
 --         !crowd reload     re-read the settings and your marked spots, rebuild this area's crowd
---         !crowd mark rest|ah|idle   add a spot where you stand (saved in crowds_spots_user.lua)
+--         !crowd mark rest|ah|idle|fish   add a spot where you stand (saved in crowds_spots_user.lua; fish = a bot fishing spot)
 --         !crowd unmark     remove your marked spot nearest to you (within 3 yalms)
 --         !crowd chat on|off|quiet|normal|busy|aion|aioff|test   shouts and say chatter (crowds_chat.lua)
 --         !crowd field on|off|test                               field parties camping and fighting (crowds_field.lua)
@@ -306,7 +306,8 @@ end
 local function freeSpots(crowd, kind)
     local out = {}
     for _, s in ipairs(crowd.spots) do
-        if not s.taken and (kind == nil or s.kind == kind) then
+        -- ('fish' spots are for bot players fishing at the water, bots_craft.lua: the crowd keeps off them)
+        if not s.taken and s.kind ~= 'fish' and (kind == nil or s.kind == kind) then
             out[#out + 1] = s
         end
     end
@@ -446,16 +447,30 @@ local function removeBot(npc, crowd, bot, animate, after)
     takeSpot(bot, nil)
     bot.gone = true
     npc:clearPath()
+
+    -- (2026-11-21, Sunie: a floating name left in Port San d'Oria) setStatus only tells the players near the NPC, so a
+    -- game that still had it drawn from further away kept its name hanging there until you zoned. Hide the name, then
+    -- tell everyone in the area it is gone.
+    local function gone(n)
+        pcall(function()
+            n:hideName(true)
+        end)
+        n:setStatus(xi.status.DISAPPEAR)
+        pcall(function()
+            n:updateToEntireZone(xi.status.DISAPPEAR, ANIM_NONE)
+        end)
+    end
+
     if animate then
         npc:entityAnimationPacket(xi.animationString.STATUS_DISAPPEAR)
         npc:timer(1500, function(n)
-            n:setStatus(xi.status.DISAPPEAR)
+            gone(n)
             if after then
                 after()
             end
         end)
     else
-        npc:setStatus(xi.status.DISAPPEAR)
+        gone(npc)
     end
 end
 
@@ -895,8 +910,8 @@ crowdCommand.onTrigger = function(player, action, arg1)
         end
     elseif action == 'mark' then
         local kind = string.lower(arg1 or '')
-        if kind ~= 'rest' and kind ~= 'ah' and kind ~= 'idle' then
-            tell(player, 'Usage: !crowd mark rest|ah|idle   (stand where a bot should stand, facing the way it should face)')
+        if kind ~= 'rest' and kind ~= 'ah' and kind ~= 'idle' and kind ~= 'fish' then
+            tell(player, 'Usage: !crowd mark rest|ah|idle|fish   (stand where a bot should stand, facing the way it should face; fish = at the water, where bot players fish)')
             return
         end
 
@@ -927,7 +942,7 @@ crowdCommand.onTrigger = function(player, action, arg1)
             tell(player, 'No spot you marked within 3 yalms.')
         end
     else
-        tell(player, 'Usage: !crowd [status|on|off|count N|reload|chat ...|field ...|mark rest|ah|idle|unmark]')
+        tell(player, 'Usage: !crowd [status|on|off|count N|reload|chat ...|field ...|mark rest|ah|idle|fish|unmark]')
     end
 end
 
