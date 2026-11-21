@@ -1,0 +1,12 @@
+# FFXI Offline: Valkurm Emperor drops the sellable Emperor Hairpin instead of Rare/Ex Empress Hairpin (same stats).
+# Same list and rates as core; drops is a list, so this replaces the whole drop list.
+
+templates:
+
+  Valkurm_Emperor:
+    loot:
+      drops:
+        - chance: always
+          item:   insect_wing
+        - chance: common
+          item:   emperor_hairpin

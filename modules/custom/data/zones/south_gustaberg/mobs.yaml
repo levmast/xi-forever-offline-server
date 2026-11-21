@@ -1,0 +1,14 @@
+# FFXI Offline: Leaping Lizzy drops the sellable Leaping Boots instead of Rare/Ex Bounding Boots (same stats).
+# Same list and rates as the phoenix module; drops is a list, so this replaces the whole drop list.
+
+templates:
+
+  Leaping_Lizzy:
+    loot:
+      drops:
+        - chance: very_common
+          item:   lizard_tail
+        - chance: uncommon
+          item:   leaping_boots
+        - chance: uncommon
+          item:   lizard_skin
