@@ -5,10 +5,12 @@
 -- so you can tell at a glance which mob to kill to give the NM its chance. Only the PH mob IDs change:
 -- the NM and the PH's other look-alikes in the zone keep their names.
 --
+-- The renaming happens once, when the first character logs in after a server start.
+--
 -- Which mobs: data file placeholder_names_data.lua, made by tools/gen_placeholder_names.py from the
 -- spawn slots in data/zones/*/mobs.yaml (+ module overrides): a slot member without a chance, in a slot
 -- where an NM has one. Re-run that tool after a server update. Lua lottery NMs (entity.phList, used by
--- Dynamis) are found at startup as well.
+-- Dynamis) are picked up too.
 --
 -- Off switch: comment out this file's line in modules/init.txt and restart the server.
 -----------------------------------
@@ -53,13 +55,22 @@ local function renameAll()
     print(string.format('[placeholder_names] %d placeholders renamed to "%s"', count, NAME))
 end
 
-m:addOverride('xi.server.onServerStart', function()
-    super()
+-- Runs once, at the first login after a server start. Not on xi.server.onServerStart on purpose: every override adds a
+-- level to that function's environment chain, it already has close to LuaJIT's limit of 100, and one more made the last
+-- one (custom/late/quest_waits.lua) fail with "loop in gettable".
+local done = false
 
-    local ok, err = pcall(renameAll)
-    if not ok then
-        print('[placeholder_names] ' .. tostring(err))
+m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
+    if not done then
+        done = true
+
+        local ok, err = pcall(renameAll)
+        if not ok then
+            print('[placeholder_names] ' .. tostring(err))
+        end
     end
+
+    return super(player, firstLogin, zoning)
 end)
 
 return m
