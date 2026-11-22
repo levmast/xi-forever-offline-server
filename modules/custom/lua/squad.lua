@@ -2326,6 +2326,11 @@ local function callMate(player, mate)
     end
 
     campApply(player, trust)
+    -- (2026-11-22, levi) the mate uses its gear's enchantments (Vision Ring and the like): squad_enchant.lua
+    local okEnchant, enchantErr = pcall(function() require('modules/custom/lua/squad_enchant').onSpawn(trust, outfit) end)
+    if not okEnchant then
+        print('[squad] enchantments: ' .. tostring(enchantErr))
+    end
 
     trust:addListener('WEAPONSKILL_USE', 'SQUAD_SC', function(mobArg, target, skill)
         pcall(skillchainCall, mobArg, target, skill)
