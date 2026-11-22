@@ -65,7 +65,8 @@
 -- Errors of a request: GSQ|<id>|err|code|text.
 -- Save data: part 1 starts with "num,rev,JOB,rules,name;" (num 0 = a new set, rev - for a new set), then rules
 -- separated by ';', each "on,TARGET,COND,ARG,COND2,ARG2,kind,NAME,RETRY[,LEVEL[,ID]]" (on 1/0; kind f = best of a spell
--- family, s = a specific spell, j = job ability, r = ranged attack, n = best nuke, b = magic burst - r/n/b without a NAME;
+-- family, s = a specific spell, j = job ability, r = ranged attack, n = best nuke, b = magic burst, (version 8) w = best
+-- Curing Waltz, d = best samba, e = storm of the day, h = helix of the day - r/n/b/w/d/e/h without a NAME;
 -- LEVEL = the rule's own minimum level, ID = the rule's id when it is not "r<position>"; empty fields allowed). Version 3
 -- carries every M1.1 rule form except table arguments ({ main, sub }, flags, ecosystems): such a rule is sent as "?" and
 -- the addon keeps it read-only. A part can be sent again (same seq, same data: answered again); the set is checked and
@@ -73,11 +74,12 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 7     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
+local VERSION      = 8     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
                            -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
                            -- 6 (job expansion): MOD_LT ("m", argument MODIFIER.number), TRIGGER_SELF_ACTION_TARGET, more
                            --   families, abilities and spells of content this server has not enabled are left out
                            -- 7 (party roles): prl, prs
+                           -- 8 (WotG, 2026-11-22): actions w (waltz), d (samba), e (storm), h (helix) for DNC/SCH
 local MAX_LINE     = 120
 local MAX_PARTS    = 16    -- w: parts that end on a rule boundary
 local MAX_CHUNKS   = 64    -- x: 32 rules of the most complex valid form (~140 bytes each) need about 49 chunks of 93 bytes
@@ -87,8 +89,10 @@ local MAX_DRAFTS   = 64    -- unfinished saves kept in memory at once (all chara
 local DRAFT_SECS   = 120
 local REPLY_MAX    = 140   -- bytes of one reply line; the game cuts a chat message after 150
 local SPELL_MAX_LV = 75    -- spells offered in the catalog: learnable at this level or below
-local ACTIONS      = { f = 'family', j = 'ja', s = 'spell', r = 'ranged', n = 'nuke', b = 'burst' }
-local ACTION_CODE  = { family = 'f', ja = 'j', spell = 's', ranged = 'r', nuke = 'n', burst = 'b' }
+local ACTIONS      = { f = 'family', j = 'ja', s = 'spell', r = 'ranged', n = 'nuke', b = 'burst',
+                       w = 'waltz', d = 'samba', e = 'storm', h = 'helix' }
+local ACTION_CODE  = { family = 'f', ja = 'j', spell = 's', ranged = 'r', nuke = 'n', burst = 'b',
+                       waltz = 'w', samba = 'd', storm = 'e', helix = 'h' }
 local NAMED        = { family = true, ja = true, spell = true }  -- the kinds with a NAME (squad_rulesets.lua ACTION_KINDS)
 -- the targets the editor offers (ai.t names; the engine's job groups: TANK = PLD/RUN, CASTER = WHM BLM RDM BRD SMN BLU
 -- SCH GEO RUN, MELEE = the melee jobs, RANGED = RNG/COR; PARTY takes the first member in party order that matches;
@@ -297,7 +301,7 @@ function G.decodeRule(text, index)
 
     local kind = ACTIONS[f[7]]
     if kind == nil then
-        return nil, 'rule ' .. index .. ': the action must be f, s, j, r, n or b'
+        return nil, 'rule ' .. index .. ': the action must be f, s, j, r, n, b, w, d, e or h'
     end
 
     if f[1] ~= '1' and f[1] ~= '0' then

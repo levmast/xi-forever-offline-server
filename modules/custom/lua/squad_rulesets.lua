@@ -48,7 +48,12 @@ R.JOB_IDS =
 }
 
 -- What squad.lua's ruleAction understands, and whether the action needs a name
-local ACTION_KINDS = { spell = true, family = true, ja = true, ranged = false, nuke = false, burst = false }
+-- (WotG, 2026-11-22) waltz = the best Curing Waltz, samba = the best samba, storm = the storm of the day, helix = the
+-- helix of the day (the engine's HIGHEST_WALTZ, BEST_SAMBA, STORM_DAY and HELIX_DAY choices; DNC and SCH)
+local ACTION_KINDS = { spell = true, family = true, ja = true, ranged = false, nuke = false, burst = false,
+                       waltz = false, samba = false, storm = false, helix = false }
+-- the job ability the waltz and samba actions need (main or sub job at its level), checked like a named job ability
+local ACTION_JA = { waltz = 'CURING_WALTZ', samba = 'DRAIN_SAMBA' }
 
 -- The argument each condition takes, as gambits_container.cpp CheckTrigger reads it (condition_arg is a uint32, so a
 -- negative number would wrap around; the TP and HP checks cast it to int16):
@@ -346,7 +351,7 @@ function R.ruleProblems(rule)
     local action = rule.action
     local named = type(action) == 'table' and ACTION_KINDS[action[1]]
     if named == nil then
-        out[#out + 1] = 'action must be { spell|family|ja, NAME } or { ranged|nuke|burst }'
+        out[#out + 1] = 'action must be { spell|family|ja, NAME } or { ranged|nuke|burst|waltz|samba|storm|helix }'
     elseif named and not isName(action[2]) then
         out[#out + 1] = 'action ' .. action[1] .. ' needs a NAME'
     elseif action[1] == 'ja' then
@@ -575,7 +580,8 @@ function R.unusableReason(rule, m)
         return 'unknown spell ' .. name
     elseif kind == 'family' and magic and type(magic.spellFamily) == 'table' and magic.spellFamily[name] == nil then
         return 'unknown spell family ' .. name
-    elseif kind == 'ja' then
+    elseif kind == 'ja' or ACTION_JA[kind] then
+        name = ACTION_JA[kind] or name
         -- the shared rules (squad_ability_rules.lua), the same squad.lua addGambit applies; fail closed without them
         local rules = abilityRules()
         local id = rules and rules.idOf(name) or nil

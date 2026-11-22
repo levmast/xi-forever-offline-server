@@ -5215,7 +5215,8 @@ local function classify(action)
     end
 
     if reaction == ai.r.MA then
-        if selector == ai.s.MB_ELEMENT or (ai.s.BEST_AGAINST_TARGET ~= nil and selector == ai.s.BEST_AGAINST_TARGET) then
+        if selector == ai.s.MB_ELEMENT or (ai.s.BEST_AGAINST_TARGET ~= nil and selector == ai.s.BEST_AGAINST_TARGET)
+            or (ai.s.HELIX_DAY ~= nil and selector == ai.s.HELIX_DAY) then
             return 'nuke'
         end
 
@@ -5330,7 +5331,8 @@ local function addGambit(mob, target, condition, action, retry)
     -- level, never a two-hour or main-job-only ability from the sub job, and a merit ability only with the merit unlocked
     -- by its owner. One rule for the built-in, launcher-edited and Rule Set rules (squad_ability_rules.lua). A bot's
     -- profile (xi.squad.profileFor: no player owner) is not checked here. Without the rules file: fail closed.
-    if action[1] == ai.r.JA and action[2] == ai.s.SPECIFIC then
+    -- (WotG) the waltz and samba choices carry Curing Waltz / Drain Samba, so a mate without DNC skips them
+    if action[1] == ai.r.JA and (action[2] == ai.s.SPECIFIC or action[2] == ai.s.HIGHEST_WALTZ or action[2] == ai.s.BEST_SAMBA) then
         local okAr, abilityRules = pcall(require, 'modules/custom/lua/squad_ability_rules')
         if okAr and type(abilityRules) == 'table' then
             if not abilityRules.allowGambit(mob, action[3]) then
@@ -5927,6 +5929,7 @@ jobs[jobIds.SCH] =
 --   cond     { condition name, argument }: the argument is a number, an effect name (like 'HASTE'), { flag = 'ERASABLE' },
 --            { ecosystem = 'DRAGON' }, or { main = 0, sub = 60 } for a different number as a sub job
 --   action   { 'spell', NAME } | { 'family', NAME } | { 'ja', NAME } | { 'ranged' } | { 'nuke' } | { 'burst' }
+--            | { 'waltz' } | { 'samba' } | { 'storm' } | { 'helix' }   (WotG: DNC/SCH, 2026-11-22)
 --   level    the least level a job ability needs (spells are limited by the mate's learned spells instead)
 -- A rule with anything wrong in it is skipped and logged as "[squad] ...", it never stops the mate from spawning.
 -----------------------------------
@@ -6028,6 +6031,17 @@ local function ruleAction(spec)
         return { ai.r.MA, ai.s.BEST_AGAINST_TARGET, 0 }
     elseif kind == 'burst' then
         return { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE }
+    elseif kind == 'waltz' then
+        -- (WotG, 2026-11-22) the strongest Curing Waltz the level and TP allow (gambits_container.cpp HIGHEST_WALTZ);
+        -- the id is the one addGambit checks against the mate's jobs
+        return { ai.r.JA, ai.s.HIGHEST_WALTZ, xi.ja.CURING_WALTZ }
+    elseif kind == 'samba' then
+        -- Haste Samba with a healer in the party (above 65), else the best Drain Samba (BEST_SAMBA)
+        return { ai.r.JA, ai.s.BEST_SAMBA, xi.ja.DRAIN_SAMBA }
+    elseif kind == 'storm' then
+        return { ai.r.MA, ai.s.STORM_DAY, 0 }
+    elseif kind == 'helix' then
+        return { ai.r.MA, ai.s.HELIX_DAY, 0 }
     end
 
     print(string.format('[squad] unknown action %s - rule skipped', tostring(kind)))
