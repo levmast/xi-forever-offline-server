@@ -3860,7 +3860,9 @@ void TrySkillUP(CCharEntity* PChar, xi::SkillType SkillID, uint8 lvl, bool force
 
         double random = xirand::GetRandomNumber(1.);
 
-        SkillUpChance = std::min(SkillUpChance, 0.5);
+        // (XI: Forever Offline, 2026-11-22, Ricc: "at 20x I still struggle to cap") the 50% ceiling made any multiplier above
+        // about 2 do nothing more; the ceiling now rises with the multiplier (0.5 x multiplier, at most 95% of eligible hits)
+        SkillUpChance = std::min(SkillUpChance, std::min(0.95, 0.5 * std::max(1.0, settings::get<double>("map.SKILLUP_CHANCE_MULTIPLIER"))));
 
         // Check for skillup% bonus. https://www.bg-wiki.com/bg/Category:Skill_Up_Food
         // Assuming multiplicative even though rate is already a % because 0.5 + 0.8 would be > 1.

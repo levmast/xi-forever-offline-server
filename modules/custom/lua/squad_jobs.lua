@@ -13,6 +13,8 @@
 --                          reaches only those roles (xi.squad.songRecipient); songs for PARTY/SELF reach everyone
 --  - J.applyRoles(mob): the party roles set with !squad partyrole <slot|name|me>, on the mates and on you, for the engine's TANK,
 --    MELEE, CASTER and RANGED targets (local var SQUAD_ROLE; 0 = by main job, as before)
+--  - J.setRole(player, mate, role): the one setter of a party role (!squad partyrole and the Gambits editor's !gsq prs):
+--    stored in the char var, and set at once on you or on the mate when it is out (J.ownTrust: only your own trust)
 --  - J.petCare(mob, pet, now): a Beastmaster's pet follows its master's target; a Dragoon uses Spirit Link when its
 --    wyvern is badly hurt (only when the mate's Rule Set does not use Spirit Link itself)
 -- Everything here needs the job expansion's xi_map (squad.cpp registers SquadJobExpansionEngine); without it, nothing is
@@ -218,6 +220,154 @@ local function roleVar(mateId)
 end
 J.roleVar = roleVar
 
+-- (party roles UI) the Gambits targets a role stands for, as letters: T tank, M melee, C mage (caster), R ranged
+J.TARGET_LETTER = { 'T', 'M', 'C', 'R' }
+J.TARGET_WORD   = { T = 'tank', M = 'melee', C = 'mage', R = 'ranged' }
+
+-- the targets the main job alone gives (role auto), in T M C R order: the same groups as J.inRole and the engine
+-- (gambits_container.cpp TANK / RANGED, gambits_container.h melee_jobs / caster_jobs). Some jobs give more than one
+-- (PLD "TM", RUN "TMC", BLU "MC").
+function J.autoTargets(jobId)
+    local job = tonumber(jobId) or 0
+    local out = {}
+    if job == 7 or job == 22 then
+        out[#out + 1] = 'T'
+    end
+
+    if MELEE[job] then
+        out[#out + 1] = 'M'
+    end
+
+    if CASTER[job] then
+        out[#out + 1] = 'C'
+    end
+
+    if job == 11 or job == 17 then
+        out[#out + 1] = 'R'
+    end
+
+    return table.concat(out)
+end
+
+-- what a character counts as for the Gambits targets: an explicit role is exactly that one target (it replaces the
+-- job for every target); auto (0) is whatever the main job gives
+function J.effectiveTargets(role, jobId)
+    local letter = J.TARGET_LETTER[tonumber(role) or 0]
+    return letter or J.autoTargets(jobId)
+end
+
+-- "tank, melee" from "TM"
+function J.targetWords(letters)
+    local words = {}
+    for c in string.gmatch(letters or '', '[TMCR]') do
+        words[#words + 1] = J.TARGET_WORD[c]
+    end
+
+    return table.concat(words, ', ')
+end
+
+local function idOf(entity)
+    local ok, id = pcall(function()
+        return entity:getID()
+    end)
+
+    return ok and id or nil
+end
+
+-- the summoned squad mate with this id that belongs to THIS player, or nil. (getPartyWithTrusts also returns the trusts
+-- of the other party members, e.g. a dualbox character's squad: only a trust whose master is this player counts.)
+function J.ownTrust(player, mateId)
+    if player == nil or mateId == nil or mateId == 0 then
+        return nil
+    end
+
+    local okP, party = pcall(function()
+        return player:getPartyWithTrusts()
+    end)
+
+    local me = idOf(player)
+    for _, member in pairs((okP and type(party) == 'table') and party or {}) do
+        local okT, isTrust = pcall(function()
+            return member:getObjType() == xi.objType.TRUST
+        end)
+
+        if okT and isTrust and member:getLocalVar('SQUAD_ID') == mateId then
+            local okM, master = pcall(function()
+                return member:getMaster()
+            end)
+
+            if
+                okM and
+                master ~= nil and
+                type(master) ~= 'number' and
+                type(master) ~= 'boolean' and
+                me ~= nil and
+                idOf(master) == me
+            then
+                return member
+            end
+        end
+    end
+
+    return nil
+end
+
+-- the stored and the live role of you (mate nil) or one of your mates, read from where they are kept:
+-- { set = stored role 0-4, live = the role the engine reads now (nil when the mate is not out), out = bool }
+function J.roleState(player, mate, trust)
+    if mate == nil then
+        return { set = player:getCharVar(roleVar(nil)), live = player:getLocalVar('SQUAD_ROLE'), out = true }
+    end
+
+    trust = trust or J.ownTrust(player, mate.id)
+    local live = nil
+    if trust ~= nil then
+        local okL, v = pcall(function()
+            return trust:getLocalVar('SQUAD_ROLE')
+        end)
+
+        live = okL and v or nil
+    end
+
+    return { set = player:getCharVar(roleVar(mate.id)), live = live, out = trust ~= nil }
+end
+
+-- The one setter of a party role, for !squad partyrole and !gsq prs: mate nil = you. It stores the role (the char var:
+-- kept across calls and sessions; 0 = auto) and sets it at once where the engine reads it - on you, or on the mate when
+-- it is out (so no new call is needed). Returns the state read back (J.roleState), or nil and why (nothing written).
+function J.setRole(player, mate, value)
+    value = tonumber(value)
+    if value == nil or value ~= math.floor(value) or J.ROLE_NAME[value] == nil then
+        return nil, 'the role must be auto, tank, melee, mage or ranged'
+    end
+
+    if mate == nil then
+        player:setCharVar(roleVar(nil), value)
+        player:setLocalVar('SQUAD_ROLE', value)
+        return J.roleState(player, nil)
+    end
+
+    player:setCharVar(roleVar(mate.id), value)
+    local trust = J.ownTrust(player, mate.id)
+    if trust ~= nil then
+        pcall(function()
+            trust:setLocalVar('SQUAD_ROLE', value)
+        end)
+    end
+
+    return J.roleState(player, mate, trust)
+end
+
+-- "by job (tank, melee)" / "tank (set)": a party role for the chat list
+function J.roleText(set, jobId)
+    if (tonumber(set) or 0) == 0 then
+        local words = J.targetWords(J.autoTargets(jobId))
+        return 'by job' .. (words ~= '' and (' (' .. words .. ')') or '')
+    end
+
+    return (J.ROLE_NAME[set] or '?') .. ' (set)'
+end
+
 -- the roles you set, on the mate being called and on you (both read by the engine while the squad is out)
 function J.applyRoles(mob)
     local master = mob:getMaster()
@@ -253,16 +403,21 @@ end
 function J.partyRoleCommand(player, squad, who, role, h)
     local say = h.say
     if who == nil then
+        local okJob, myJob = pcall(function()
+            return player:getMainJob()
+        end)
+
         local lines = { 'Party roles (who a Rule Set\'s Tank/Melee/Mage/Ranged targets mean): you ' ..
-            J.ROLE_NAME[player:getCharVar(roleVar(nil))] }
+            J.roleText(player:getCharVar(roleVar(nil)), okJob and myJob or 0) }
         for _, m in ipairs(squad) do
-            lines[#lines + 1] = string.format('[%d] %s %s', m.slot or 0, m.name,
-                J.ROLE_NAME[player:getCharVar(roleVar(m.id))] or 'by job')
+            lines[#lines + 1] = string.format('[%d] %s %s', m.slot or 0, m.name, J.roleText(player:getCharVar(roleVar(m.id)), m.mjob))
         end
 
         say(player, table.concat(lines, ', '))
         say(player, J.PARTYROLE_USAGE)
-        say(player, '(auto = by main job: PLD/RUN tank, RNG/COR ranged ...)')
+        say(player, '(auto = by main job: PLD/RUN tank, RNG/COR ranged ...; a role you set replaces the job for every target)')
+        say(player, 'The Squad menu\'s Role (tank/damage/healer/support) only changes how a mate acts itself; Rule Set targets '
+            .. 'use the party role.')
         return
     end
 
@@ -273,8 +428,7 @@ function J.partyRoleCommand(player, squad, who, role, h)
     end
 
     if string.lower(who) == 'me' then
-        player:setCharVar(roleVar(nil), value)
-        player:setLocalVar('SQUAD_ROLE', value)
+        J.setRole(player, nil, value)
         say(player, string.format('You count as %s for your squad\'s Rule Sets now.', J.ROLE_NAME[value]))
         return
     end
@@ -286,9 +440,28 @@ function J.partyRoleCommand(player, squad, who, role, h)
         return
     end
 
-    player:setCharVar(roleVar(mate.id), value)
-    say(player, string.format('%s counts as %s for Rule Sets. Call it again (or !squad reapply) to apply it.', mate.name,
-        J.ROLE_NAME[value]))
+    local state = J.setRole(player, mate, value)
+    if state and state.out then
+        say(player, string.format('%s counts as %s for Rule Sets now.', mate.name, J.ROLE_NAME[value]))
+    else
+        say(player, string.format('%s counts as %s for Rule Sets from the next call.', mate.name, J.ROLE_NAME[value]))
+    end
+end
+
+-- (party roles UI) the hint after !squad role <slot> tank: the Squad menu's Role does not make a Gambits Tank target.
+-- nil when the mate already counts as a tank (by its party role, or PLD/RUN by job)
+function J.squadRoleHint(player, mate, roleWord, slot)
+    if roleWord ~= 'tank' or mate == nil then
+        return nil
+    end
+
+    local targets = J.effectiveTargets(player:getCharVar(roleVar(mate.id)), mate.mjob)
+    if string.find(targets, 'T', 1, true) then
+        return nil
+    end
+
+    return string.format('For Gambits\' Tank target use !squad partyrole %s tank (the Role only changes how %s acts).',
+        tostring(slot or mate.slot or '<slot>'), mate.name)
 end
 
 -- ---------------------------------------------------------------- Sneak Attack / Trick Attack under the Rule Set

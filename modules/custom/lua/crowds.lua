@@ -18,6 +18,10 @@
 --         !crowd unmark     remove your marked spot nearest to you (within 3 yalms)
 --         !crowd chat on|off|quiet|normal|busy|aion|aioff|test   shouts and say chatter (crowds_chat.lua)
 --         !crowd field on|off|test                               field parties camping and fighting (crowds_field.lua)
+--   * (2026-11-21) Coming and going: a newcomer may walk in from a zone line or come out of the Mog House, and someone
+--     leaving may walk out through one, or walk to the Home Point, stand a moment and go (!extras crowd_gates off:
+--     as before, everyone appears and fades by the Home Point). Two of them passing each other may stop for a moment
+--     (!extras crowd_meet off). The gates come from the game's own zone lines (gates_data.lua, build_gates_data.py).
 -----------------------------------
 require('modules/module_utils')
 -----------------------------------
@@ -26,6 +30,7 @@ local m = Module:new('crowds')
 local DATA_PATH   = 'modules/custom/lua/crowds_data'
 local CONFIG_PATH = 'modules/custom/lua/crowds_config'
 local USER_SPOTS  = 'modules/custom/lua/crowds_spots_user.lua'
+local TEAM_SPOTS  = 'modules/custom/lua/crowds_spots_team.lua'   -- spots marked by the team, shipped with the game (bot fishing spots)
 
 local HARD_CAP       = 40       -- never more than this per area (dynamic entity ids are shared with squad mates, pets, caskets)
 local EMPTY_DESPAWN  = 5 * 60   -- seconds an area must be empty before its crowd is removed
@@ -55,6 +60,22 @@ if not chatOk or type(chat) ~= 'table' then
 end
 
 pcall(require, 'modules/custom/lua/nav_guard') -- (xi.navguard: keeps units out of walls, nav_guard.lua)
+-- (2026-11-21) the switches (extras.lua) and the area gates (gates_data.lua). Either one missing: everything below
+-- that uses them is simply off, and the crowd behaves as it did before.
+local extrasOk, extras = pcall(require, 'modules/custom/lua/extras')
+if not extrasOk or type(extras) ~= 'table' or type(extras.on) ~= 'function' then
+    extras = nil
+end
+
+local gatesOk, gatesData = pcall(require, 'modules/custom/lua/gates_data')
+if not gatesOk or type(gatesData) ~= 'table' or type(gatesData.gates) ~= 'table' then
+    gatesData = nil
+end
+
+local function extraOn(key)
+    return extras ~= nil and extras.on(key)
+end
+
 local fieldOk, field = pcall(require, 'modules/custom/lua/crowds_field')
 if not fieldOk or type(field) ~= 'table' then
     print('[crowds] field parties are off: crowds_field.lua could not be loaded: ' .. tostring(field))
@@ -69,6 +90,7 @@ end
 
 local cfg = {}
 local userSpots = {}               -- [zone id] = { { kind, x, y, z, rot }, ... }
+local teamSpots = {}               -- same shape, from crowds_spots_team.lua (read-only: !crowd mark never writes it)
 local crowds = {}                  -- [zone id] = { bots = { [npc id] = bot }, emptySince = os.time() or nil, usedNames = {} }
 local serial = 0                   -- makes internal names unique
 
@@ -110,6 +132,19 @@ local function loadUserSpots()
     end
 end
 
+-- (2026-11-22, Tasou) spots the team marked in game with !crowd mark and sent in: every player gets them, so bot
+-- players fish at the docks without anyone marking anything. A missing or broken file just means no team spots.
+local function loadTeamSpots()
+    teamSpots = {}
+    local chunk = loadfile(TEAM_SPOTS)
+    if chunk then
+        local okc, t = pcall(chunk)
+        if okc and type(t) == 'table' then
+            teamSpots = t
+        end
+    end
+end
+
 local function saveUserSpots()
     local f = io.open(USER_SPOTS, 'w')
     if not f then
@@ -132,6 +167,7 @@ end
 
 loadConfig()
 loadUserSpots()
+loadTeamSpots()
 
 -----------------------------------
 -- Helpers
@@ -267,6 +303,13 @@ local function zoneSpots(zoneId)
         list[#list + 1] = s
     end
 
+    -- team spots were marked standing on the spot, like the player's own: used as they are
+    for _, s in ipairs(teamSpots[zoneId] or {}) do
+        if type(s) == 'table' and s.kind and s.x and s.y and s.z then
+            list[#list + 1] = { kind = s.kind, x = s.x, y = s.y, z = s.z, rot = s.rot or 0, team = true }
+        end
+    end
+
     for _, s in ipairs(userSpots[zoneId] or {}) do
         list[#list + 1] = { kind = s.kind, x = s.x, y = s.y, z = s.z, rot = s.rot, user = true }
     end
@@ -326,6 +369,69 @@ local function takeSpot(bot, spot)
     end
 end
 
+-----------------------------------
+-- Gates (2026-11-21): the area's zone lines and Mog House doors, from the game's own data (gates_data.lua)
+-----------------------------------
+local GATE_WALK_MAX = 150 -- yalms: someone leaving only walks to a gate this close
+local GATE_REACHED  = 4   -- yalms: this close to the gate counts as through it
+local GATE_GIVE_UP  = 150 -- seconds on the way before it leaves where it stands (as it always did)
+local arrivalsByZone = nil -- [zone id] = { { x, y, z, rot }, ... }: where you stand after zoning in
+
+local function buildArrivals()
+    arrivalsByZone = {}
+    for _, list in pairs(gatesData and gatesData.gates or {}) do
+        for _, g in ipairs(list) do
+            local a = arrivalsByZone[g.to] or {}
+            arrivalsByZone[g.to] = a
+            a[#a + 1] = { x = g.ax, y = g.ay, z = g.az, rot = g.arot }
+        end
+    end
+end
+
+-- the point on the walking map (nav_guard.lua), or nil when there is no ground near it
+local function onMap(zoneId, p)
+    if xi.navguard then
+        local x, y, z, how = xi.navguard.snap(zoneId, p, nil, 'goal')
+        if how == 'failed' then
+            return nil
+        end
+
+        return { x = x, y = y, z = z, rot = p.rot }
+    end
+
+    return { x = p.x, y = p.y, z = p.z, rot = p.rot }
+end
+
+-- exits: where you walk to leave this area; arrivals: where someone who just zoned in stands
+local function crowdGates(crowd, zoneId)
+    if crowd.gates == nil then
+        if arrivalsByZone == nil then
+            buildArrivals()
+        end
+
+        local exits, arrivals = {}, {}
+        for _, g in ipairs((gatesData and gatesData.gates[zoneId]) or {}) do
+            -- the zone line itself is mostly off the walking map: they walk to the spot just inside the gate
+            -- (where someone coming in through it stands) and are gone from there
+            local p = g.px and onMap(zoneId, { x = g.px, y = g.py, z = g.pz }) or nil
+            if p then
+                exits[#exits + 1] = p
+            end
+        end
+
+        for _, a in ipairs(arrivalsByZone[zoneId] or {}) do
+            local p = onMap(zoneId, a)
+            if p then
+                arrivals[#arrivals + 1] = p
+            end
+        end
+
+        crowd.gates = { exits = exits, arrivals = arrivals }
+    end
+
+    return crowd.gates
+end
+
 -- for bots_life.lua: the same names, spots and small talk as the crowds
 xi.crowds.makeName = function(race, used)
     return makeName(race, used or {})
@@ -354,6 +460,7 @@ end
 -- Behaviour
 -----------------------------------
 local think -- forward
+local emote -- forward (tryMeet uses it)
 
 local function schedule(npc, bot, ms)
     npc:timer(ms or rnd(THINK_MIN, THINK_MAX), function(n)
@@ -361,7 +468,7 @@ local function schedule(npc, bot, ms)
     end)
 end
 
-local function emote(npc, target, which)
+emote = function(npc, target, which)
     local mode = cfg.emoteText and xi.emoteMode.ALL or xi.emoteMode.MOTION
     npc:sendEmote(target or npc, which, mode, false)
 end
@@ -432,8 +539,103 @@ local function startWalk(npc, bot, crowd)
     takeSpot(bot, target)
     bot.kind = 'walk'
     bot.walkStarted = os.time()
+    bot.met, bot.stuck, bot.lastX, bot.lastZ = nil, 0, nil, nil
     npc:pathTo(target.x, target.y, target.z)
     return true
+end
+
+-- (2026-11-21) three looks in a row without getting anywhere: it is caught on something
+local function walkStuck(npc, bot)
+    local pos = npc:getPos()
+    if bot.lastX and dist2(pos.x, pos.z, bot.lastX, bot.lastZ) < 0.25 then
+        bot.stuck = (bot.stuck or 0) + 1
+    else
+        bot.stuck = 0
+    end
+
+    bot.lastX, bot.lastZ = pos.x, pos.z
+    return bot.stuck >= 3
+end
+
+-- (2026-11-21) leaving: through a gate close by (it just goes, as when someone zones), or a walk to the Home
+-- Point for a warp. Nothing suitable near: false, and it leaves where it stands, as before.
+local function startLeaving(npc, bot, crowd, zoneId)
+    local gates = crowdGates(crowd, zoneId)
+    local pos = npc:getPos()
+    local roll = math.random()
+    local target, how
+    if roll < 0.60 then
+        local near = {}
+        for _, g in ipairs(gates.exits) do
+            if dist2(pos.x, pos.z, g.x, g.z) <= GATE_WALK_MAX * GATE_WALK_MAX then
+                near[#near + 1] = g
+            end
+        end
+
+        if #near > 0 then
+            target, how = near[rnd(1, #near)], 'gate'
+        end
+    elseif roll < 0.85 then
+        local near = {}
+        for _, s in ipairs(freeSpots(crowd, 'rest')) do
+            if dist2(pos.x, pos.z, s.x, s.z) <= WALK_RANGE * WALK_RANGE then
+                near[#near + 1] = s
+            end
+        end
+
+        if #near > 0 then
+            target, how = near[rnd(1, #near)], 'warp'
+        end
+    end
+
+    if not target then
+        return false
+    end
+
+    npc:setAnimation(ANIM_NONE)
+    takeSpot(bot, how == 'warp' and target or nil)
+    bot.kind = 'leaving'
+    bot.leaveHow, bot.leaveAt, bot.walkStarted = how, target, os.time()
+    bot.met, bot.stuck, bot.lastX, bot.lastZ = true, 0, nil, nil
+    npc:pathTo(target.x, target.y, target.z)
+    return true
+end
+
+-- (2026-11-21) two of them walking past each other stop, turn to each other and greet, then carry on
+local MEET_CHANCE, MEET_NEAR, MEET_FAR = 0.12, 2, 5
+
+local function tryMeet(npc, bot, crowd)
+    local pos = npc:getPos()
+    for id, other in pairs(crowd.bots) do
+        if other ~= bot and other.kind == 'walk' and not other.met and not other.gone then
+            local otherNpc = GetNPCByID(id)
+            local op = otherNpc and otherNpc:getPos()
+            if op then
+                local d = dist2(pos.x, pos.z, op.x, op.z)
+                if d >= MEET_NEAR * MEET_NEAR and d <= MEET_FAR * MEET_FAR and math.abs((pos.y or 0) - (op.y or 0)) <= 3 then
+                    local untilT = os.time() + rnd(5, 9)
+                    npc:clearPath()
+                    otherNpc:clearPath()
+                    npc:lookAt(op)
+                    otherNpc:lookAt(pos)
+                    bot.kind, bot.meetUntil, bot.met = 'meet', untilT, true
+                    other.kind, other.meetUntil, other.met = 'meet', untilT, true
+                    emote(npc, otherNpc, xi.emote.WAVE)
+                    local myId = npc:getID()
+                    otherNpc:timer(rnd(1200, 2500), function(n)
+                        local back = GetNPCByID(myId)
+                        if back and not other.gone and not bot.gone and other.kind == 'meet' then
+                            emote(n, back, chance(0.5) and xi.emote.WAVE or xi.emote.BOW)
+                        end
+                    end)
+
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
 end
 
 local function removeBot(npc, crowd, bot, animate, after)
@@ -546,11 +748,87 @@ think = function(npc, bot)
         end
     end
 
+    -- (2026-11-21) Leaving through a gate, or by the Home Point (startLeaving)
+    local function replace()
+        local z = GetZone(zoneId)
+        if z and crowds[zoneId] and crowds[zoneId].count < targetFor(zoneId) then
+            spawnBot(z, crowds[zoneId], 'arrive')
+        end
+    end
+
+    if bot.kind == 'leaving' then
+        local pos = npc:getPos()
+        local at = bot.leaveAt
+        local there = at ~= nil and dist2(pos.x, pos.z, at.x, at.z) <= GATE_REACHED * GATE_REACHED
+        if
+            not there and npc:isFollowingPath() and
+            os.time() - (bot.walkStarted or 0) < GATE_GIVE_UP and
+            not walkStuck(npc, bot)
+        then
+            schedule(npc, bot, WALK_CHECK)
+            return
+        end
+
+        npc:clearPath()
+        if there and bot.leaveHow == 'gate' then
+            removeBot(npc, crowd, bot, false) -- through the zone line: it is just gone
+            replace()
+        elseif there then
+            -- at the crystal: a moment of standing still reads as casting the warp (walking up and vanishing in
+            -- the same step reads as a bug)
+            bot.kind = 'warping'
+            if at.rot then
+                npc:setRotation(at.rot)
+            end
+
+            schedule(npc, bot, rnd(3000, 5000))
+        else
+            removeBot(npc, crowd, bot, true, replace) -- did not get there: it leaves where it stands, as before
+        end
+
+        return
+    end
+
+    if bot.kind == 'warping' then
+        removeBot(npc, crowd, bot, true, replace)
+        return
+    end
+
+    -- (2026-11-21) Stopped for someone on the road (tryMeet): then on to where it was going
+    if bot.kind == 'meet' then
+        if os.time() < (bot.meetUntil or 0) then
+            schedule(npc, bot, WALK_CHECK)
+            return
+        end
+
+        if bot.spot then
+            bot.kind = 'walk'
+            bot.walkStarted = os.time()
+            bot.stuck, bot.lastX, bot.lastZ = 0, nil, nil
+            npc:pathTo(bot.spot.x, bot.spot.y, bot.spot.z)
+            schedule(npc, bot, WALK_CHECK)
+        else
+            settleAt(npc, bot, nil)
+            schedule(npc, bot)
+        end
+
+        return
+    end
+
     -- Walking: wait until arrived (or give up after 2 minutes)
     if bot.kind == 'walk' then
         if npc:isFollowingPath() and os.time() - (bot.walkStarted or 0) < 120 then
-            schedule(npc, bot, WALK_CHECK)
-            return
+            -- (2026-11-21) caught on something for three looks: it stops there instead of pushing for two minutes
+            if extraOn('crowd_gates') and walkStuck(npc, bot) then
+                npc:clearPath()
+            else
+                if extraOn('crowd_meet') and not bot.met and chance(MEET_CHANCE) then
+                    tryMeet(npc, bot, crowd)
+                end
+
+                schedule(npc, bot, WALK_CHECK)
+                return
+            end
         end
 
         local pos = npc:getPos()
@@ -567,13 +845,14 @@ think = function(npc, bot)
 
     -- Now and then someone logs out or zones away, and a new adventurer arrives by a Home Point
     if chance(cfg.turnover) then
+        -- (2026-11-21) mostly it walks out: through a gate close by, or to the Home Point for a warp
+        if extraOn('crowd_gates') and startLeaving(npc, bot, crowd, zoneId) then
+            schedule(npc, bot, WALK_CHECK)
+            return
+        end
+
         -- the newcomer appears once the leaver has gone (same moment its disappear effect ends)
-        removeBot(npc, crowd, bot, true, function()
-            local z = GetZone(zoneId)
-            if z and crowds[zoneId] and crowds[zoneId].count < targetFor(zoneId) then
-                spawnBot(z, crowds[zoneId], 'arrive')
-            end
-        end)
+        removeBot(npc, crowd, bot, true, replace)
         return
     end
 
@@ -683,6 +962,16 @@ spawnBot = function(zone, crowd, how)
     end
 
     local spot = spots[rnd(1, #spots)]
+    -- (2026-11-21) a newcomer mostly comes in through a zone line or out of the Mog House, not by the Home Point
+    local gate = nil
+    if how == 'arrive' and extraOn('crowd_gates') and chance(0.6) then
+        local arrivals = crowdGates(crowd, zoneId).arrivals
+        if #arrivals > 0 then
+            gate = arrivals[rnd(1, #arrivals)]
+        end
+    end
+
+    local at = gate or spot
     local race = pickWeighted(RACE_WEIGHT)
     local face = rnd(0, 15)
     local bracket = pickWeighted(zd.levels or { [10] = 1 })
@@ -695,10 +984,10 @@ spawnBot = function(zone, crowd, how)
         name                 = 'Crowd' .. serial,
         packetName           = name,
         look                 = makeLook(race, face, job, bracket),
-        x                    = spot.x,
-        y                    = spot.y,
-        z                    = spot.z,
-        rotation             = spot.rot or rnd(0, 255),
+        x                    = at.x,
+        y                    = at.y,
+        z                    = at.z,
+        rotation             = at.rot or rnd(0, 255),
         widescan             = 0,
         entityFlags          = cfg.entityFlags,
         releaseIdOnDisappear = true,
@@ -713,15 +1002,18 @@ spawnBot = function(zone, crowd, how)
     -- Gives the NPC a path finder. Must come before any timer: it replaces the NPC's AI (and with it its queued timers).
     npc:initNpcAi()
 
-    local bot = { name = name, job = job, level = bracket, serial = serial, x = spot.x, z = spot.z }
+    local bot = { name = name, job = job, level = bracket, serial = serial, x = at.x, z = at.z }
     crowd.bots[npc:getID()] = bot
     crowd.count = crowd.count + 1
-    takeSpot(bot, spot)
+    takeSpot(bot, (not gate) and spot or nil)
 
     if how == 'arrive' then
-        npc:entityAnimationPacket(xi.animationString.STATUS_VISIBLE)
+        if not gate then
+            npc:entityAnimationPacket(xi.animationString.STATUS_VISIBLE)
+        end
+
         bot.kind = 'idle'
-        npc:timer(rnd(2000, 4000), function(n)
+        npc:timer(gate and rnd(1000, 2500) or rnd(2000, 4000), function(n)
             if not bot.gone then
                 startWalk(n, bot, crowd)
                 schedule(n, bot, WALK_CHECK)
@@ -864,6 +1156,7 @@ crowdCommand.onTrigger = function(player, action, arg1)
     elseif action == 'reload' then
         loadConfig()
         loadUserSpots()
+        loadTeamSpots()
         local removed = despawnAll(zoneId)
         local made = ensureCrowd(zone)
         tell(player, string.format('Settings re-read (%s, size %d). Removed %d, spawned %d.', cfg.enabled and 'ON' or 'OFF', cfg.perZone, removed, made))

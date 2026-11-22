@@ -10,6 +10,10 @@
 --   * a character that already exists: sent to their delivery box at their next login (xi.player.onGameIn)
 --   Bot players never get one ([Bot]Started is set before their charCreate; BotIsBot from bots.cpp). A character that
 --   already has the shirt anywhere is only marked as done. Marker: char var [FBShirt]Given.
+--
+-- A second one, once, for anyone who threw the first away (2026-11-22): until v0.1.59 it showed on player installs as
+-- a nameless Lv127 item. The database update does the giving (custom/sql/forever_beta_shirt.sql: it can see the
+-- delivery box, this file cannot) and leaves [FBShirt]Reissue = 2; here the player is told at the next login.
 -----------------------------------
 require('modules/module_utils')
 -----------------------------------
@@ -17,6 +21,7 @@ local m = Module:new('forever_beta_shirt')
 
 local ITEM      = 25725
 local GIVEN     = '[FBShirt]Given'
+local REISSUE   = '[FBShirt]Reissue' -- 2 = a second shirt is in the delivery box and the player has not been told yet
 local POWER     = 75
 local DURATION  = 43200
 local MAX_BONUS = 4000
@@ -62,6 +67,11 @@ end)
 
 m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     local result = super(player, firstLogin, zoning)
+    if not zoning and not firstLogin and player:getCharVar(REISSUE) == 2 then
+        player:setCharVar(REISSUE, 3)
+        player:printToPlayer('Threw away the nameless Lv127 shirt? A new Forever Beta Shirt is waiting in your delivery box.', xi.msg.channel.SYSTEM_3)
+    end
+
     if zoning or firstLogin or player:getCharVar(GIVEN) ~= 0 or isBot(player) then
         return result
     end

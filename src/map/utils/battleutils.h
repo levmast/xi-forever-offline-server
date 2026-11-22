@@ -198,7 +198,7 @@ auto HasNinjaTool(CBattleEntity* PEntity, CSpell* PSpell, bool ConsumeTool) -> b
 void applyCharm(CBattleEntity* PCharmer, CBattleEntity* PVictim, timer::duration charmTime = 0s);
 void unCharm(CBattleEntity* PEntity);
 
-auto doSoulEaterEffect(CCharEntity* m_PChar, uint32 damage) -> uint16;
+auto doSoulEaterEffect(CBattleEntity* m_PChar, uint32 damage) -> uint16;
 auto doConsumeManaEffect(CCharEntity* m_PChar) -> uint16;
 auto getOverWhelmDamageBonus(CBattleEntity* PAttacker, CBattleEntity* PDefender, int32 damage) -> int32;
 

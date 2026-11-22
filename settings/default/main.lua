@@ -337,6 +337,10 @@ xi.settings.main =
     ENABLE_COSMETIC_WARDROBE     = false, -- true/false. Mog Wardrobe 8 opens at 80 slots and only accepts the cosmetic item list. Requires the cosmetic_wardrobe modules.
     GUILD_SHOP_PERSISTENCE       = false, -- true/false. Guild shop stock and prices survive server restarts. Requires the guild_shop_persistence module.
 
+    -- XI: FOREVER OFFLINE COMFORTS (2026-11-22; off = the era; modules/custom/late/comforts.lua)
+    CASKET_SHOW_CODE             = 0,     -- 1 = on, 0 = off (the era). A locked treasure casket tells you its combination when you examine it.
+    GUILD_SHOPS_ALWAYS_STOCKED   = 0,     -- 1 = on, 0 = off (the era). Guild shops never run out of the items they sell.
+
     -- SYSTEM
     DISABLE_INACTIVITY_WATCHDOG = false, -- true/false. If this is enabled, the watchdog which detects if the main loop isn't being ticked will no longer be able to kill the process.
     INACTIVITY_WATCHDOG_PERIOD  = 2000,  -- Time in milliseconds which the inactivity watchdog will wait between ticks of the main loop before potentially killing the target process.

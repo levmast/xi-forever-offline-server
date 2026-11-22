@@ -551,6 +551,34 @@ if not USE_CUSTOM_HOMEPOINT_MENU then
     end)
 end
 
+-- (2026-11-22, Yumainai, kupo-8) Home Point #1 of Port San d'Oria, Bastok Markets, Port Bastok and Port Windurst stands
+-- at its pre-2015 spot (Phoenix). A teleport from another zone lands there (homepoint.lua), but a teleport inside the
+-- same zone is done by the game itself, with today's spot from its own files: you landed where the crystal no longer
+-- is. After such a jump the server puts you next to the crystal.
+local MOVED_HOMEPOINTS =
+{
+    [ 6] = { -66.077,  -4, -104.948, 192, xi.zone.PORT_SAN_DORIA },
+    [11] = { -293.791, -10, -102.539, 160, xi.zone.BASTOK_MARKETS },
+    [14] = { 53.645,   7.5,  -28.682, 224, xi.zone.PORT_BASTOK },
+    [22] = { -67.980,  -4,   110.675, 192, xi.zone.PORT_WINDURST },
+}
+
+m:addOverride('xi.homepoint.onEventFinish', function(player, csid, option, event)
+    super(player, csid, option, event)
+    if csid ~= event or bit.band(option, 0xFF) ~= 3 or xi.settings.main.HOMEPOINT_TELEPORT ~= 1 then
+        return
+    end
+
+    local dest = MOVED_HOMEPOINTS[bit.rshift(option, 16)]
+    if dest and dest[5] == player:getZoneID() then
+        player:timer(1500, function(entity)
+            if entity:getZoneID() == dest[5] then
+                entity:setPos(dest[1], dest[2], dest[3], dest[4])
+            end
+        end)
+    end
+end)
+
 -----------------------------------
 -- Survival Guides
 -----------------------------------

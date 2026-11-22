@@ -2941,6 +2941,72 @@ void FishingAction(CCharEntity* PChar, const GP_CLI_COMMAND_FISHING_2_MODE mode,
     uint16 MessageOffset = GetMessageOffset(PChar->getZone());
     uint32 vanaTime      = earth_time::vanadiel_timestamp();
 
+    // (XI: Forever Offline, 2026-11-22) won the fish fight (the minigame's own success, or no minigame at all): the same
+    // server-side reel check as always (skill, line and rod breaks), then the catch
+    const auto finishFight = [PChar](const uint32 fightSpecial)
+    {
+        CItemWeapon* Rod        = dynamic_cast<CItemWeapon*>(PChar->getEquip(SLOT_RANGED));
+        rod_t*       FishingRod = [&]() -> rod_t*
+        {
+            if (Rod == nullptr)
+            {
+                return nullptr;
+            }
+
+            return findRod(Rod->getID());
+        }();
+
+        // Lose the catch if the rod was unequipped or isn't a known fishing rod
+        if (PChar->hookedFish == nullptr || FishingRod == nullptr)
+        {
+            LoseCatch(PChar, FISHINGFAILTYPE_NONE);
+            UnhookMob(PChar, Lost::Yes);
+            BaitLoss(PChar, RemoveFly::No, SendUpdate::Yes);
+        }
+        else
+        {
+            catchresponse_t* response = ReelCheck(PChar, PChar->hookedFish, FishingRod);
+
+            if (response->fishingToken != PChar->fishingToken || PChar->hookedFish->special != fightSpecial)
+            {
+                LoseCatch(PChar, FISHINGFAILTYPE_NONE);
+                UnhookMob(PChar, Lost::Yes);
+                BaitLoss(PChar, RemoveFly::No, SendUpdate::Yes);
+            }
+            else if (response->caught)
+            {
+                PChar->fishingToken = 0;
+                ReelInCatch(PChar);
+                BaitLoss(PChar, RemoveFly::No, SendUpdate::Yes);
+            }
+            else
+            {
+                chargeFailedCatch(PChar);
+
+                if (response->linebreak)
+                {
+                    BaitLoss(PChar, RemoveFly::Yes, SendUpdate::Yes);
+                    PChar->hookedFish->successtype = FISHINGSUCCESSTYPE_LINEBREAK;
+                }
+                else if (response->rodbreak)
+                {
+                    RodBreak(PChar);
+                    PChar->hookedFish->successtype = FISHINGSUCCESSTYPE_RODBREAK;
+                }
+
+                LoseCatch(PChar, response->failReason);
+                UnhookMob(PChar, response->caught ? Lost::No : Lost::Yes);
+            }
+
+            if (response != nullptr)
+            {
+                destroy(response);
+                response = nullptr;
+            }
+        }
+    };
+
+
     switch (mode)
     {
         case GP_CLI_COMMAND_FISHING_2_MODE::RequestCheckHook:
@@ -3044,7 +3110,15 @@ void FishingAction(CCharEntity* PChar, const GP_CLI_COMMAND_FISHING_2_MODE mode,
                 PChar->updatemask |= UPDATE_HP;
                 // send the fishing packet
                 PChar->animation = xi::Animation::NewFishingFish;
-                PChar->pushPacket<GP_SERV_COMMAND_FISH>(response->stamina, response->regen, response->response, response->attackdmg, response->delay, response->heal, response->timelimit, response->hooksense, response->special);
+                if (settings::get<uint8>("map.FISHING_MINIGAME") == 0)
+                {
+                    // (XI: Forever Offline, 2026-11-22) era fishing: no fight on screen, the catch is decided at once
+                    finishFight(response->special);
+                }
+                else
+                {
+                    PChar->pushPacket<GP_SERV_COMMAND_FISH>(response->stamina, response->regen, response->response, response->attackdmg, response->delay, response->heal, response->timelimit, response->hooksense, response->special);
+                }
             }
             else
             {
@@ -3062,65 +3136,7 @@ void FishingAction(CCharEntity* PChar, const GP_CLI_COMMAND_FISHING_2_MODE mode,
 
             if (stamina <= 4)
             {
-                CItemWeapon* Rod        = dynamic_cast<CItemWeapon*>(PChar->getEquip(SLOT_RANGED));
-                rod_t*       FishingRod = [&]() -> rod_t*
-                {
-                    if (Rod == nullptr)
-                    {
-                        return nullptr;
-                    }
-
-                    return findRod(Rod->getID());
-                }();
-
-                // Lose the catch if the rod was unequipped or isn't a known fishing rod
-                if (PChar->hookedFish == nullptr || FishingRod == nullptr)
-                {
-                    LoseCatch(PChar, FISHINGFAILTYPE_NONE);
-                    UnhookMob(PChar, Lost::Yes);
-                    BaitLoss(PChar, RemoveFly::No, SendUpdate::Yes);
-                }
-                else
-                {
-                    catchresponse_t* response = ReelCheck(PChar, PChar->hookedFish, FishingRod);
-
-                    if (response->fishingToken != PChar->fishingToken || PChar->hookedFish->special != special)
-                    {
-                        LoseCatch(PChar, FISHINGFAILTYPE_NONE);
-                        UnhookMob(PChar, Lost::Yes);
-                        BaitLoss(PChar, RemoveFly::No, SendUpdate::Yes);
-                    }
-                    else if (response->caught)
-                    {
-                        PChar->fishingToken = 0;
-                        ReelInCatch(PChar);
-                        BaitLoss(PChar, RemoveFly::No, SendUpdate::Yes);
-                    }
-                    else
-                    {
-                        chargeFailedCatch(PChar);
-
-                        if (response->linebreak)
-                        {
-                            BaitLoss(PChar, RemoveFly::Yes, SendUpdate::Yes);
-                            PChar->hookedFish->successtype = FISHINGSUCCESSTYPE_LINEBREAK;
-                        }
-                        else if (response->rodbreak)
-                        {
-                            RodBreak(PChar);
-                            PChar->hookedFish->successtype = FISHINGSUCCESSTYPE_RODBREAK;
-                        }
-
-                        LoseCatch(PChar, response->failReason);
-                        UnhookMob(PChar, response->caught ? Lost::No : Lost::Yes);
-                    }
-
-                    if (response != nullptr)
-                    {
-                        destroy(response);
-                        response = nullptr;
-                    }
-                }
+                finishFight(special);
             }
             else if (stamina <= 0x14)
             {

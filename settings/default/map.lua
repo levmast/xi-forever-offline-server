@@ -156,6 +156,10 @@ xi.settings.map =
     -- [FFXI Offline] The daily fishing limits (200 catches and the fatigue meter). false = fish as much as you like.
     FISHING_DAILY_LIMITS = true,
 
+    -- [FFXI Offline] 1 = the fishing minigame (today's game). 0 = era fishing: no fight on screen, the catch (or a lost
+    -- catch, a broken line or rod, by your skill) is decided as soon as the fish bites.
+    FISHING_MINIGAME = 1,
+
     -- Sets the minimum level a character must be to fish.
     FISHING_MIN_LEVEL = 1,
 
@@ -248,6 +252,9 @@ xi.settings.map =
     -- 10 classic
     -- 30 abyssea
     MAX_MERIT_POINTS = 30,
+
+    -- (XI: Forever Offline, 2026-11-22) 1 = no per-group merit caps: every merit can go to its own maximum.
+    FULL_MERITS = 0, -- 1 = on, 0 = off (the era)
 
     -- Minimum time between uses of yell command (in seconds).
     YELL_COOLDOWN = 30,

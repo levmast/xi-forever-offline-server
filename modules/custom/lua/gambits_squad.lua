@@ -52,6 +52,16 @@
 --   wss   <n> <slot> <ctl> <mode> <tp> <ws>  stores the setting for the mate's main job -> the wsg answer
 --                                       (ctl 0 = Squad default, 1 = Custom; mode 1-4; tp 1000/1500/2000/3000; ws 0 = Best)
 --   wsa   <n> <slot>                 -> puts the stored setting on the called mate now (no new call) -> the wsg answer
+-- (version 7, party roles; squad_jobs.lua) who the Rule Sets' Tank/Melee/Mage/Ranged targets mean (!squad partyrole):
+--   prl   <n>                        -> GSQ|n|pr|who|name|JOB|level|set|auto|out|live for you (who 0) and each of your squad
+--                                       mates (who = slot), then GSQ|n|pm|name|JOB|kind|targets for every OTHER member of
+--                                       your party now (kind p = a player character, t = a trust; read-only), GSQ|n|end|count
+--                                       set = the stored role (0 auto, 1 tank, 2 melee, 3 mage, 4 ranged); auto = the targets
+--                                       the main job alone gives (letters T tank, M melee, C mage, R ranged: PLD "TM"); out
+--                                       0/1; live = the role the engine reads now, - when the mate is not out; targets = what
+--                                       that member counts as now (its role, else its main job)
+--   prs   <n> <who> <role>           -> stores the role of you (who 0) or the mate in that slot of YOUR squad and sets it at
+--                                       once (on you, or on the mate when it is out) -> that one pr line, read back; GSQ|n|end|1
 -- Errors of a request: GSQ|<id>|err|code|text.
 -- Save data: part 1 starts with "num,rev,JOB,rules,name;" (num 0 = a new set, rev - for a new set), then rules
 -- separated by ';', each "on,TARGET,COND,ARG,COND2,ARG2,kind,NAME,RETRY[,LEVEL[,ID]]" (on 1/0; kind f = best of a spell
@@ -63,10 +73,11 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 6     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
+local VERSION      = 7     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
                            -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
                            -- 6 (job expansion): MOD_LT ("m", argument MODIFIER.number), TRIGGER_SELF_ACTION_TARGET, more
                            --   families, abilities and spells of content this server has not enabled are left out
+                           -- 7 (party roles): prl, prs
 local MAX_LINE     = 120
 local MAX_PARTS    = 16    -- w: parts that end on a rule boundary
 local MAX_CHUNKS   = 64    -- x: 32 rules of the most complex valid form (~140 bytes each) need about 49 chunks of 93 bytes
@@ -1257,6 +1268,142 @@ requests.wsa = function(player, w)
 
     W.liveApply(player, mate, trust)
     replyWs(player, w[2], W, mate)
+end
+
+-- ---------------------------------------------------------------- (version 7) party roles (squad_jobs.lua)
+local function partyRoles()
+    local ok, J = pcall(require, 'modules/custom/lua/squad_jobs')
+    return ok and type(J) == 'table' and type(J.setRole) == 'function' and J or nil
+end
+
+-- names on the wire: letters, digits, _ and - only
+local function wireName(name)
+    local s = string.gsub(tostring(name or ''), '[^%w_%-]', '')
+    return s ~= '' and s or '?'
+end
+
+-- entity:method(...) that cannot fail the request: its result, or the fallback when it errors or gives nil
+local function call(entity, method, fallback, ...)
+    local args = { ... }
+    local ok, v = pcall(function()
+        return entity[method](entity, (table.unpack or unpack)(args))
+    end)
+
+    return ok and v ~= nil and v or fallback
+end
+
+-- the member is a trust (false when that cannot be told)
+local function isTrustEntity(member)
+    local ok, yes = pcall(function()
+        return member:getObjType() == xi.objType.TRUST
+    end)
+
+    return ok and yes == true
+end
+
+-- the pr line of you (mate nil) or one of your squad mates, read from where the role is kept
+local function replyRole(player, id, J, mate)
+    local state = J.roleState(player, mate)
+    if mate == nil then
+        local job = call(player, 'getMainJob', 0)
+        G.reply(player, id, 'pr', 0, wireName(call(player, 'getName', 'you')), jobName(job),
+            call(player, 'getMainLvl', 0), state.set, J.autoTargets(job), 1, state.live or 0)
+        return
+    end
+
+    local okL, main = G.levels(mate, player)
+    local level = okL and main or (mate.jobs and mate.jobs[mate.mjob] and mate.jobs[mate.mjob].level) or 0
+    G.reply(player, id, 'pr', mate.slot, wireName(mate.name), jobName(mate.mjob), level, state.set, J.autoTargets(mate.mjob),
+        state.out and 1 or 0, state.live ~= nil and state.live or '-')
+end
+
+requests.prl = function(player, w)
+    local J = partyRoles()
+    if J == nil then
+        G.reply(player, w[2], 'err', 'server', 'party roles are not available on this server (squad_jobs.lua)')
+        return
+    end
+
+    local squad, count = squadOf(player), 0
+    replyRole(player, w[2], J, nil)
+    count = count + 1
+    for _, mate in ipairs(squad) do
+        replyRole(player, w[2], J, mate)
+        count = count + 1
+    end
+
+    -- everyone else in the party now (a dualbox character, another player, their trusts, a trust that is not a squad
+    -- mate): read-only, as the engine sees them, so a summary of "who counts as tank" is never missing them
+    local own = {}
+    for _, mate in ipairs(squad) do
+        own[mate.id] = true
+    end
+
+    local me = call(player, 'getID', -1)
+    for _, member in pairs(call(player, 'getPartyWithTrusts', {})) do
+        local memberId = call(member, 'getID', -2)
+        local isTrust = isTrustEntity(member)
+        local mine = false
+        if isTrust then
+            local master = call(member, 'getMaster', nil)
+            local masterId = master and type(master) ~= 'number' and call(master, 'getID', -3) or -3
+            mine = masterId == me and own[call(member, 'getLocalVar', 0, 'SQUAD_ID')] == true
+        end
+
+        if memberId ~= me and not mine then
+            local job = call(member, 'getMainJob', 0)
+            local name = isTrust and call(member, 'getPacketName', nil) or nil
+            name = name or call(member, 'getName', '?')
+            G.reply(player, w[2], 'pm', wireName(name), jobName(job), isTrust and 't' or 'p',
+                J.effectiveTargets(call(member, 'getLocalVar', 0, 'SQUAD_ROLE'), job))
+            count = count + 1
+        end
+    end
+
+    G.reply(player, w[2], 'end', count)
+end
+
+requests.prs = function(player, w)
+    local J = partyRoles()
+    if J == nil then
+        G.reply(player, w[2], 'err', 'server', 'party roles are not available on this server (squad_jobs.lua)')
+        return
+    end
+
+    local whoText, roleText = w[3] or '', w[4] or ''
+    if
+        not string.match(whoText, '^%d+$') or
+        not string.match(roleText, '^%d+$') or
+        w[5] ~= nil
+    then
+        G.reply(player, w[2], 'err', 'badreq', 'prs needs who (0 = you, or a squad slot) and a role 0-4')
+        return
+    end
+
+    local role = tonumber(roleText)
+    if J.ROLE_NAME[role] == nil then
+        G.reply(player, w[2], 'err', 'badreq', 'the role must be 0 auto, 1 tank, 2 melee, 3 mage or 4 ranged')
+        return
+    end
+
+    -- only you, or a mate of YOUR squad (the slot is looked up in the sender's own squad)
+    local mate = nil
+    if tonumber(whoText) ~= 0 then
+        mate = mateInSlot(player, whoText)
+        if mate == nil then
+            G.reply(player, w[2], 'err', 'missing', 'no squad mate in that slot')
+            return
+        end
+    end
+
+    local state, why = J.setRole(player, mate, role)
+    if state == nil then
+        G.reply(player, w[2], 'err', 'badreq', why or 'the role was not set')
+        return
+    end
+
+    replyRole(player, w[2], J, mate)
+    G.reply(player, w[2], 'end', 1)
 end
 
 requests.w = function(player, w, rest)

@@ -5,7 +5,7 @@
 --                       every caster is within `range` yalms (songs reach about 9 to 10)
 --   no casters          the party middle, at least `mid` yalms from the foe
 -- Out of a fight she is released to the stock AI.
--- Check it: !bard debug prints where she goes and how far; if she does not close in for 5 passes it says NOT MOVING and what holds her.
+-- Check it: !bard debug prints where she goes and how far; (debug on) if she does not close in for 5 passes it says NOT MOVING and what holds her.
 --   Automatic: it starts by itself when a bard mate is switched on (Actions ON in the Squads window, or the actions pass).
 --   !bard on | off | debug | (nothing = status)      `!bard off` keeps it off until `!bard on`.
 --   Tune live: SQUAD_BARD_WALK.cfg.safe = 14, .behind = 3, .range = 9
@@ -205,7 +205,7 @@ local function step(player)
                     end
 
                     bard:setLocalVar('SQUAD_BW_LAST', math.floor(now))
-                    if W.debug or bard:getLocalVar('SQUAD_BW_STUCK') == C.stuck then
+                    if W.debug then -- (2026-11-22, Meli, PTgamerguy: the NOT MOVING line showed without !bard debug)
                         player:printToPlayer(string.format('[bard] %s -> %.0f,%.0f  %.1f yalms to go%s', bard:getPacketName(), s.x, s.z, togo,
                             bard:getLocalVar('SQUAD_BW_STUCK') >= C.stuck
                                 and string.format('  NOT MOVING (TRUST_DISTANCE=%s, idle=%s): wall, or something else is moving her',

@@ -289,6 +289,16 @@ if not friendsOk or type(friends) ~= 'table' then
     friends = nil
 end
 
+-- (2026-11-21) emotes at the right moments, a memory for where it died, a life story, the town gates
+-- (bots_extras.lua and the four files it loads; each has its own switch: !extras)
+local botExtrasOk, botExtras = pcall(require, 'modules/custom/lua/bots_extras')
+if not botExtrasOk or type(botExtras) ~= 'table' then
+    print('[bots] the 2026-11-21 additions are off: bots_extras.lua could not be loaded: ' .. tostring(botExtras))
+    botExtras = nil
+end
+
+xi.bots.extras = botExtras -- (bots_hunt.lua and bots_life.lua ask it where to go and how to leave)
+
 local HUNT_CHECK = { 5 * 60, 15 * 60 } -- seconds in town between two "go hunting?" thoughts
 local DEAD_ALONE = { 15, 40 }          -- seconds dead (not with you) before it returns to its Home Point
 local DEAD_WITH_YOU = 180              -- with you: it waits this long for a Raise (when someone in the party can cast one)
@@ -402,6 +412,10 @@ if hunt then
     if partyPlay and hunt.setParty then
         hunt.setParty(partyPlay)
     end
+end
+
+if botExtras then
+    pcall(botExtras.setup, state)
 end
 
 if quests then
@@ -637,6 +651,11 @@ local function diary(bot, text, public)
         table.remove(st.events, 1)
     end
 
+    -- (2026-11-21) the ones worth remembering go into its life story (bots_story.lua)
+    if botExtras then
+        pcall(botExtras.onDiary, bot, text, public)
+    end
+
     -- the bigger news gets around the server (other bots may talk about it)
     if public and growth and growth.addNews then
         pcall(growth.addNews, bot:getName() .. ' ' .. text)
@@ -664,9 +683,18 @@ local function noticeChanges(bot, st)
         diary(bot, 'switched to ' .. (DIARY_JOBS[job] or '?'))
     end
 
+    -- (2026-11-21) a real level up, one level more on the same job (not a job change, not the end of a level sync)
+    if botExtras and st.lastLvl and st.lastJob == job and lvl == st.lastLvl + 1 then
+        pcall(botExtras.onLevel, bot, st)
+    end
+
     st.lastLvl, st.lastJob = lvl, job
     if bot:isDead() and not st.diedNoted then
         st.diedNoted = true
+        if botExtras then
+            pcall(botExtras.onDeath, bot, st) -- (out hunting: it stays away from there for a while, bots_memory.lua)
+        end
+
         local zone = bot:getZone()
         diary(bot, 'got killed' .. (zone and (' in ' .. zone:getName():gsub('_', ' ')) or ''))
     elseif not bot:isDead() then
@@ -716,6 +744,10 @@ think = function(bot, token)
     pcall(noticeChanges, bot, st)
     if friends then
         pcall(friends.notice, bot, st) -- (time with you, being raised with you, its level ups for its friends)
+    end
+
+    if botExtras then
+        pcall(botExtras.tick, bot, st) -- (2026-11-21: emotes at the right moments, bots_social.lua)
     end
 
     -- a Blue Mage bot: learns blue magic from what it defeats (spells from scrolls) and keeps its set spells up to
@@ -837,6 +869,10 @@ think = function(bot, token)
 
     if leader and life then
         life.leaveTown(bot, st)
+    end
+
+    if leader and st.trip then
+        st.trip = nil -- (2026-11-21: you invited it on its way to the gate; the hunt it had planned is off)
     end
 
     if leader and st.hunt then
@@ -1027,7 +1063,23 @@ think = function(bot, token)
 
     -- not with you: crafting / gathering / at the auction house (bots_craft.lua), out hunting (bots_hunt.lua),
     -- or its own life in town (bots_life.lua)
-    if not leader and craft and st.task then
+    if not leader and st.trip then
+        -- (2026-11-21) on its way to the town gate (bots_gates.lua); it leaves for its hunting area from there
+        local okTrip, r = false, nil
+        if botExtras then
+            okTrip, r = pcall(botExtras.tripThink, bot, st)
+        end
+
+        if not okTrip then
+            if st.trip and st.trip.hunt ~= nil and st.hunt == st.trip.hunt then
+                st.hunt = nil
+            end
+
+            st.trip = nil
+        elseif r == 'zoning' then
+            return -- a new brain starts in the new area
+        end
+    elseif not leader and craft and st.task then
         local r = craft.think(bot, st)
         if r == 'zoning' then
             return
@@ -1177,6 +1229,9 @@ local function startBrain(bot, delay, hello)
     local st = state[bot:getID()] or { mode = 'follow' }
     st.token, st.attacking, st.awaySince = token, nil, nil
     state[bot:getID()] = st
+    if botExtras then
+        pcall(botExtras.onBrain, bot, st) -- (2026-11-21: after a restart its diary is filled from its life story)
+    end
 
     bot:timer(delay, function(b)
         if hello and math.random() < 0.5 then
@@ -1878,7 +1933,9 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
         end
 
         if hunt.start(bot, st) or st.hunt then
-            tell(player, string.format('%s (Lv%d) goes hunting in area %d.', bot:getName(), bot:getMainLvl(), st.hunt and st.hunt.zone or bot:getZoneID()))
+            -- (2026-11-21: st.trip = it runs to the town gate first, bots_gates.lua)
+            tell(player, string.format('%s (Lv%d) goes hunting in area %d%s.', bot:getName(), bot:getMainLvl(), st.hunt and st.hunt.zone or bot:getZoneID(),
+                st.trip and ' (it runs to the town gate first)' or ''))
         else
             tell(player, bot:getName() .. ' found no camp for its level right now (try again in a minute).')
         end
@@ -1949,6 +2006,21 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
         end
 
         tell(player, shown == 0 and 'No bot parties right now (one forms every minute or so from level 10+ bots idling in town).' or (shown .. ' bot part' .. (shown == 1 and 'y' or 'ies') .. ' (leader first).'))
+    elseif action == 'story' then
+        -- (2026-11-21) a bot's life story (bots_story.lua): !bots story <Name>
+        local lines = a1 and botExtras and botExtras.storyLines and botExtras.storyLines(a1, 12) or nil
+        if not a1 then
+            tell(player, 'Usage: !bots story <Name>')
+        elseif not lines then
+            tell(player, 'Life stories are not loaded (bots_story.lua).')
+        elseif #lines == 0 then
+            tell(player, a1 .. ' has no story yet (it starts with the next thing worth remembering; names are case sensitive).')
+        else
+            tell(player, a1 .. ', newest first:')
+            for _, line in ipairs(lines) do
+                tell(player, '  ' .. line)
+            end
+        end
     elseif action == 'news' and growth then
         local list = growth.news(10)
         tell(player, #list == 0 and 'No news yet (the bots catch up at their next log in).' or ('News (pace: ' .. growth.pace() .. '):'))

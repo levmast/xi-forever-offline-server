@@ -593,7 +593,9 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
 
         // (2026-11-17) the trust template's own list only where the mate's jobs really have the spell at their levels: the
         // template is a Trust NPC's, whose list doesn't follow job levels (sparkiie: a level 39 RDM cast Phalanx II
-        // and Distract). Template-only spells no job of the mate learns are kept as before.
+        // and Distract). A template spell that no job at all learns (a Trust NPC's own spell) is kept as before; one that
+        // other jobs learn but not the mate's is not (Joachim, Shikaree Z and Nashmeira are BRD/DRG/PUP with WHM sub jobs:
+        // their Cure, -na spells and Erase went to a squad BRD/BLM).
         if (PTrust->m_SpellListContainer != nullptr)
         {
             for (const auto& entry : PTrust->m_SpellListContainer->m_spellList)
@@ -607,14 +609,33 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
                 const uint8 byMain = PListed->getJob(mainJob);
                 const uint8 bySub  = spec->sJob != 0 ? PListed->getJob(subJob) : 255;
                 const bool  jobOk  = byMain <= mainLevel || bySub <= subLevel;
-                const bool  noJob  = byMain == 255 && bySub == 255;
+                bool        noJob  = true;
+                for (uint8 job = 1; job < MAX_JOBTYPE && noJob; ++job)
+                {
+                    noJob = PListed->getJob(static_cast<xi::Job>(job)) == 255;
+                }
                 // (a job spell with no scroll is a monster's copy, e.g. Diaga II; blue magic and summons have none)
                 const auto  group    = PListed->getSpellGroup();
                 const bool  noScroll = group != SPELLGROUP_BLUE && group != SPELLGROUP_SUMMONING &&
                                       xi::items::lookup(static_cast<uint16>(0x1200 + static_cast<uint16>(entry.spellId))) == nullptr;
                 if ((jobOk && !noScroll) || noJob)
                 {
-                    known->AddSpell(entry.spellId, entry.min_level, entry.max_level);
+                    // A Trust NPC's list can give a spell later than the mate's jobs learn it (Excenmille: Flash at 45, a PLD
+                    // learns it at 37, and Cure at 5, a PLD/WHM has it from level 2; Kupipi: Paralyze at 6, a WHM learns it at
+                    // 4). A trust's casting check reads the first entry of a spell (CMobSpellList::GetSpellMinLevel), and this
+                    // one comes first, so it gets the level the mate really has the spell at: the main job's level, or 0 when
+                    // only the sub job gives it (as the job spells below). Template-only entries keep their level.
+                    uint16 minLevel = entry.min_level;
+                    if (byMain <= mainLevel)
+                    {
+                        minLevel = std::min<uint16>(minLevel, byMain);
+                    }
+                    else if (bySub <= subLevel)
+                    {
+                        minLevel = 0;
+                    }
+
+                    known->AddSpell(entry.spellId, minLevel, entry.max_level);
                 }
             }
         }
@@ -853,6 +874,29 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
     return PTrust;
 }
 
+// XI: Forever Offline: a squad Dragoon borrows the body of the Dragoon trust template (Shikaree Z), and with it her pool
+// modifier MPP +100 (mob_pool_mods). That is her own trait, not a Dragoon's, so a squad Dragoon (local var SQUAD_ID, main
+// job DRG) gives that MPP back right after mobutils::AddSqlModifiers added it. Nothing else changes: other pool modifiers,
+// other squad jobs, ordinary trusts (Shikaree Z herself), and MP from the job, sub job and gear.
+void RemoveTemplateMppFromSquadDragoon(CTrustEntity* PTrust)
+{
+    if (PTrust == nullptr || PTrust->GetLocalVar("SQUAD_ID") == 0 || PTrust->GetMJob() != xi::Job::DRG)
+    {
+        return;
+    }
+
+    if (const ModsList_t* PPoolMods = mobutils::GetMobPoolMods(PTrust->m_Pool))
+    {
+        for (const auto* mod : PPoolMods->mods)
+        {
+            if (mod->getModID() == xi::Mod::MPP)
+            {
+                PTrust->delModifier(xi::Mod::MPP, mod->getModAmount());
+            }
+        }
+    }
+}
+
 void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
 {
     if (settings::get<uint8>("main.ENABLE_TRUST_ALTER_EGO_EXPO") > 0) // Alter Ego Expo HPP/MPP +50%, All Status Resistance +25%
@@ -864,6 +908,7 @@ void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
 
     // add mob pool mods ahead of applying stats
     mobutils::AddSqlModifiers(PTrust);
+    RemoveTemplateMppFromSquadDragoon(PTrust);
 
     xi::Job mJob = PTrust->GetMJob();
     xi::Job sJob = PTrust->GetSJob();

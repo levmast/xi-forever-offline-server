@@ -130,6 +130,13 @@ local function removeCasket(npc)
     npc:entityAnimationPacket(xi.animationString.STATUS_DISAPPEAR)
     npc:timer(2000, function(n)
         n:setStatus(xi.status.DISAPPEAR)
+        -- (2026-11-21, Bhaflau Thickets: a gone casket left a ghost you could not walk through) setStatus only tells the
+        -- players near the NPC, and the engine forgets a disappearing dynamic NPC at once, so a game that still had the
+        -- casket drawn kept it, invisible but solid, until you zoned. Tell everyone in the area it is gone (the same
+        -- fix as the town crowds in crowds.lua).
+        pcall(function()
+            n:updateToEntireZone(xi.status.DISAPPEAR, 0)
+        end)
     end)
 end
 

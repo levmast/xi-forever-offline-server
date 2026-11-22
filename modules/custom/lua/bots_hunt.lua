@@ -342,7 +342,30 @@ end
 function H.start(bot, st, minutes)
     local lvl = bot:getMainLvl()
     local zoneId = areaFor(lvl, nationOf(bot))
+    local extras = xi.bots and xi.bots.extras or nil
+    -- (2026-11-21) an area it died in lately is passed over when its level has another one (bots_memory.lua)
+    if extras and extras.chooseArea then
+        local okArea, z = pcall(extras.chooseArea, bot, zoneId, function()
+            return areaFor(lvl, nationOf(bot))
+        end)
+        if okArea and type(z) == 'number' then
+            zoneId = z
+        end
+    end
+
     local camp = findCamp(zoneId, lvl)
+    -- ... and not a camp next to where it died within the hour
+    if camp and extras and extras.campOk then
+        for _ = 1, 3 do
+            local okCamp, fine = pcall(extras.campOk, bot, zoneId, camp)
+            if not okCamp or fine ~= false then
+                break
+            end
+
+            camp = findCamp(zoneId, lvl) or camp
+        end
+    end
+
     if not camp then
         return false
     end
@@ -354,6 +377,30 @@ function H.start(bot, st, minutes)
     if bot:getZoneID() == zoneId then
         BotMoveTo(bot:getID(), camp.x, camp.y, camp.z)
         return false
+    end
+
+    -- (2026-11-21) it runs to the town gate first and leaves from there (bots_gates.lua). The walk takes a
+    -- while: if someone stands at that camp by then, it takes another one.
+    if extras and extras.leave then
+        local h = st.hunt
+        local function go(b)
+            local zone = GetZone(zoneId)
+            for _, p in ipairs(zone and realPlayersIn(zone) or {}) do
+                if d2(p:getPos(), h.camp) <= (CAMP_SPACE + 20) ^ 2 then
+                    h.camp = findCamp(zoneId, lvl) or h.camp
+                    break
+                end
+            end
+
+            b:setPos(h.camp.x, h.camp.y, h.camp.z, 0, zoneId)
+        end
+
+        local okLeave, walking = pcall(extras.leave, bot, st, zoneId, go)
+        if okLeave and walking == true then
+            return false -- (not zoning yet: bots.lua walks it to the gate, st.trip; st.hunt marks it as busy)
+        end
+
+        st.trip = nil -- (no gate walk: it leaves at once, as before)
     end
 
     bot:setPos(camp.x, camp.y, camp.z, 0, zoneId)

@@ -1838,6 +1838,10 @@ auto CZoneEntities::npcTick(CNpcEntity* PNpc, timer::time_point tick) -> Task<vo
         {
             if (PChar->SpawnNPCList.contains(PNpc->id))
             {
+                // XI: Forever Offline (2026-11-21; found in msintome/server, GPL-3.0): tell the game before the entity
+                // is dropped. Erasing it from the list alone means SpawnNPCs never sees it again and never sends the
+                // despawn, so anyone who had it in view kept a copy standing there (a crowd member left behind).
+                PChar->updateEntityPacket(PNpc, ENTITY_DESPAWN, UPDATE_NONE);
                 PChar->SpawnNPCList.erase(PNpc->id);
             }
         }

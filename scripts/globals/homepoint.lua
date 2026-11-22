@@ -12,7 +12,7 @@ local homepointData =
     [  3] = { group = 1, fee = 1, dest = {     -178,       4,      71,   0, xi.zone.NORTHERN_SAN_DORIA     } }, -- Northern San d'Oria #1
     [  4] = { group = 1, fee = 1, dest = {       10,    -0.2,      95,   0, xi.zone.NORTHERN_SAN_DORIA     } }, -- Northern San d'Oria #2
     [  5] = { group = 1, fee = 1, dest = {       70,    -0.2,      10,   0, xi.zone.NORTHERN_SAN_DORIA     } }, -- Northern San d'Oria #3
-    [  6] = { group = 1, fee = 1, dest = { -66.077, 4, -104.948, 192, xi.zone.PORT_SAN_DORIA } }, -- Port San d'Oria #1 (XI: Forever Offline: the pre-2015 crystal spot Phoenix uses, 2026-11-18)
+    [  6] = { group = 1, fee = 1, dest = { -66.077, -4, -104.948, 192, xi.zone.PORT_SAN_DORIA } }, -- Port San d'Oria #1 (XI: Forever Offline: the pre-2015 crystal spot Phoenix uses, 2026-11-18; y was +4, the plaza ground is -4)
     [  7] = { group = 1, fee = 1, dest = {       48,     -12,    -105,   0, xi.zone.PORT_SAN_DORIA         } }, -- Port San d'Oria #2
     [  8] = { group = 1, fee = 1, dest = {       -6,     -13,    -150,   0, xi.zone.PORT_SAN_DORIA         } }, -- Port San d'Oria #3
     [  9] = { group = 2, fee = 1, dest = {       39,       0,     -43,   0, xi.zone.BASTOK_MINES           } }, -- Bastok Mines #1

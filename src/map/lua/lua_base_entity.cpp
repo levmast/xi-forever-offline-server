@@ -14032,7 +14032,10 @@ void CLuaBaseEntity::updateEnmityFromDamage(CLuaBaseEntity* PEntity, const int32
     auto* PBaseMob = dynamic_cast<CMobEntity*>(m_PBaseEntity);
 
     // This is a mob attacking a target and losing enmity from doing damage
-    if (m_PBaseEntity->objtype == TYPE_PC || m_PBaseEntity->objtype == TYPE_PET || (PBaseMob && PBaseMob->isCharmed))
+    // XI: Forever Offline: a player's squad mate (a trust with local var SQUAD_ID) counts as such a target too, as a player does.
+    // Ordinary trusts are unchanged (they fall through to the branch below, which adds nothing to a trust's own list).
+    const bool squadMate = m_PBaseEntity->objtype == TYPE_TRUST && m_PBaseEntity->GetLocalVar("SQUAD_ID") != 0;
+    if (m_PBaseEntity->objtype == TYPE_PC || m_PBaseEntity->objtype == TYPE_PET || squadMate || (PBaseMob && PBaseMob->isCharmed))
     {
         if (auto* PTargetMob = dynamic_cast<CMobEntity*>(PEntity->GetBaseEntity()))
         {

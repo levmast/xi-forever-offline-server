@@ -717,10 +717,10 @@ void CAttack::ProcessDamage()
         m_damage = std::floor<uint32>(m_damage * 1.0f + std::max(m_attacker->getMod(xi::Mod::TRIPLE_ATTACK_DMG) / 100.0f, 0.f));
     }
 
-    // Soul eater.
-    if (auto* PChar = dynamic_cast<CCharEntity*>(m_attacker))
+    // Soul eater. (XI: Forever Offline, 2026-11-22, squad audit N6: squad mates and trusts too; it only reads mods and HP)
+    if (m_attacker->objtype == TYPE_PC || m_attacker->objtype == TYPE_TRUST)
     {
-        m_damage = battleutils::doSoulEaterEffect(PChar, m_damage);
+        m_damage = battleutils::doSoulEaterEffect(m_attacker, m_damage);
     }
 
     // Set attack type to Samba if the attack type is normal.  Don't overwrite other types.  Used for Samba double damage.

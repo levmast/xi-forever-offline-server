@@ -721,6 +721,16 @@ function L.goHome(bot)
         return false
     end
 
+    -- (2026-11-21) through the town gate: it arrives where you do when you zone in from that side, and walks in
+    -- from there (bots_gates.lua). No way found, or switched off: on its spot, as before.
+    local extras = xi.bots and xi.bots.extras or nil
+    if extras and extras.homeArrival then
+        local okGate, at = pcall(extras.homeArrival, bot, zoneId)
+        if okGate and type(at) == 'table' and at.x then
+            spot = at
+        end
+    end
+
     if xi.navguard then xi.navguard.setPos(bot, spot.x, spot.y, spot.z, spot.rot or 0, zoneId, nil) else bot:setPos(spot.x, spot.y, spot.z, spot.rot or 0, zoneId) end
     return true
 end

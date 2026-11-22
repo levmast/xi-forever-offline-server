@@ -2218,6 +2218,14 @@ auto TakePhysicalDamage(CBattleEntity* PAttacker, CBattleEntity* PDefender, PHYS
                     static_cast<CMobEntity*>(PAttacker)->PEnmityContainer->UpdateEnmityFromAttack(PDefender, damage);
                 }
                 break;
+            case TYPE_TRUST:
+                // XI: Forever Offline: a player's squad mate (local var SQUAD_ID) loses enmity when it is hit, exactly as a
+                // player does (the TYPE_PC branch below, Cover included). Ordinary trusts keep the stock behavior: no loss.
+                if (PDefender->GetLocalVar("SQUAD_ID") == 0)
+                {
+                    break;
+                }
+                [[fallthrough]];
             case TYPE_PC:
                 if (PAttacker->objtype == TYPE_MOB)
                 {
@@ -2542,8 +2550,10 @@ auto GetCritHitRate(CBattleEntity* PAttacker, CBattleEntity* PDefender, bool ign
             critHitRate = 100;
         }
     }
-    else if (auto* PChar = dynamic_cast<CCharEntity*>(PAttacker); PChar && PAttacker->GetMJob() == xi::Job::THF && charutils::hasTrait(PChar, TRAIT_ASSASSIN) &&
-                                                                  (!ignoreSneakTrickAttack) && PAttacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::TrickAttack))
+    // (XI: Forever Offline, 2026-11-22, squad audit N7) Trick Attack's sure critical for squad mates and trusts too, like Sneak Attack above
+    else if ((dynamic_cast<const CCharEntity*>(PAttacker) != nullptr || dynamic_cast<const CTrustEntity*>(PAttacker) != nullptr) &&
+             PAttacker->GetMJob() == xi::Job::THF && PAttacker->hasTrait(TRAIT_ASSASSIN) &&
+             (!ignoreSneakTrickAttack) && PAttacker->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::TrickAttack))
     {
         CBattleEntity* taChar = battleutils::getAvailableTrickAttackChar(PAttacker, PDefender);
         if (taChar != nullptr)
@@ -3982,7 +3992,7 @@ void TransferEnmity(CBattleEntity* PHateReceiver, CBattleEntity* PHateGiver, CMo
  *                                                                       *
  ************************************************************************/
 
-auto doSoulEaterEffect(CCharEntity* m_PChar, uint32 damage) -> uint16
+auto doSoulEaterEffect(CBattleEntity* m_PChar, uint32 damage) -> uint16
 {
     if (m_PChar->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Souleater))
     {

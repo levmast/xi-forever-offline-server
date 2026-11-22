@@ -287,7 +287,9 @@ void CMeritPoints::RaiseMerit(const xi::Merit merit)
         return;
     }
 
-    if (m_MeritPoints >= PMerit->next && PMerit->count < PMerit->upgrade && GetMeritCountInSameCategory(merit) < category->second.MaxUpgrades)
+    // (XI: Forever Offline, 2026-11-22, PTgamerguy, Ricc) map.FULL_MERITS: no per-group cap, every merit to its own maximum
+    const bool groupRoom = settings::get<uint8>("map.FULL_MERITS") != 0 || GetMeritCountInSameCategory(merit) < category->second.MaxUpgrades;
+    if (m_MeritPoints >= PMerit->next && PMerit->count < PMerit->upgrade && groupRoom)
     {
         m_MeritPoints -= PMerit->next;
 

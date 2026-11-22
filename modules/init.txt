@@ -138,6 +138,9 @@ custom/lua/crystalboy_quests.lua
 # Tetra Master: card matches against the computer (!tm; the tetramaster addon draws the board). Art: Nalfey
 custom/lua/tetramaster.lua
 
+# Casino Dealer: NPCs in the 3 starting cities and Lower Jeuno; trade gil, roll against the dealer, win and your gil is doubled
+custom/lua/casino_dealer.lua
+
 # Crystal Boy items
 custom/sql/crystalboy_items.sql
 custom/sql/casket_costume_models.sql
