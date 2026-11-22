@@ -1375,12 +1375,16 @@ local function campTick(mob)
     for _, member in ipairs(everyone) do
         if member:getObjType() == xi.objType.PC and (member:getAnimation() == xi.animation.HEALING or percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP or
             (member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') < CAMP_READY_MP)) then
+            -- (2026-11-21) the line names who is short and of what: it was read as the healer's MP when it was yours
+            local hpLow = percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP
+            local short = member:getAnimation() == xi.animation.HEALING and 'is resting' or (hpLow and 'needs HP' or 'needs MP')
             if not c.waitSaid then
                 c.waitSaid = true
-                campSay(player, puller, 'waiting a bit, need hp/mp')
+                campSay(player, puller, string.format('waiting a bit, %s %s', member:getName(), short))
             end
 
-            squadCampWhy(c, string.format('waiting: %s (you or a character) needs HP/MP or is resting', member:getName()))
+            squadCampWhy(c, string.format('waiting: %s %s (HP %d%% MP %d%%; needs %d%% HP, %d%% MP)', member:getName(), short,
+                percentOf(member, 'getHP', 'getMaxHP'), percentOf(member, 'getMP', 'getMaxMP'), CAMP_READY_HP, CAMP_READY_MP))
             c.nextPull = now + 5
             return
         end
@@ -1391,7 +1395,8 @@ local function campTick(mob)
             (trust:getMaxMP() > 0 and percentOf(trust, 'getMP', 'getMaxMP') < CAMP_READY_MP) then
             if not c.waitSaid then
                 c.waitSaid = true
-                campSay(player, puller, 'waiting a bit, need hp/mp')
+                campSay(player, puller, string.format('waiting a bit, %s needs %s', trust:getPacketName(),
+                    percentOf(trust, 'getHP', 'getMaxHP') < CAMP_READY_HP and 'HP' or 'MP'))
             end
 
             squadCampWhy(c, string.format('waiting: %s HP %d%% MP %d%% (needs %d%% HP, %d%% MP)', trust:getPacketName(), percentOf(trust, 'getHP', 'getMaxHP'),
