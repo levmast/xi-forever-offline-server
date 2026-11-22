@@ -23,6 +23,9 @@
 
 #include "entities/char_entity.h"
 
+#include <algorithm>
+#include <cstring>
+
 GP_SERV_COMMAND_TRACKING_LIST::GP_SERV_COMMAND_TRACKING_LIST(const CCharEntity* PChar, CBaseEntity* PEntity)
 {
     auto& packet = this->data();
@@ -41,6 +44,13 @@ GP_SERV_COMMAND_TRACKING_LIST::GP_SERV_COMMAND_TRACKING_LIST(const CCharEntity* 
     packet.x = static_cast<int16_t>(PEntity->loc.p.x - PChar->loc.p.x); // Difference in x-value between character and object coordinates
     // TODO: Shouldn't this be Y?
     packet.z = static_cast<int16_t>(PEntity->loc.p.z - PChar->loc.p.z); // Difference in z-value between character and object coordinates
+
+    // XI: Forever Offline (2026-11-22, levi): a renamed mob (e.g. an NM placeholder shown as "placeholder") sends its
+    // new name in the wide scan entry too, so wide scan / filterscan can show and search it. Others are unchanged.
+    if (PEntity->isRenamed && PEntity->objtype == TYPE_MOB && !PEntity->packetName.empty())
+    {
+        std::memcpy(packet.sName, PEntity->packetName.c_str(), std::min<size_t>(PEntity->packetName.size(), sizeof(packet.sName) - 1));
+    }
 
     // TODO: sName
     // std::memcpy(packet.sName, PEntity->GetName(), (PEntity->name.size() > 14 ? 14 : PEntity->name.size()));
