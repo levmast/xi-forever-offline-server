@@ -129,6 +129,12 @@ function C.onMagic(caster, target, spell, action)
         return
     end
 
+    -- only a spell on a monster can be a magic burst (a cure's own "recovers HP" message can match its burst message)
+    local okT, isMob = pcall(function() return target:getObjType() == xi.objType.MOB end)
+    if not okT or not isMob then
+        return
+    end
+
     local okM, msg, burstMsg = pcall(function()
         return action:getMsg(target:getID()), spell:getMagicBurstMessage()
     end)

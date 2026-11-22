@@ -11,7 +11,7 @@
 --  - one mate per monster; a monster that resists three times in a row is left alone (undead, an NM that will not
 --    sleep), and NMs are tried once;
 --  - not for a mate set to the tank role, nor with its magic switch off; it keeps 20 MP back.
--- Switch: !squad sleep on|off.
+-- Switch: !squad sleep on|off. (Below: White and Red Mages silence casters, !squad silence on|off.)
 -----------------------------------
 require('modules/module_utils')
 local P = require('modules/custom/lua/squad_plus')
@@ -159,6 +159,93 @@ P.register('sleep', {
     title = 'Black Mage, Red Mage and Bard mates sleep the extra monsters of a link',
     words = { 'sleep', 'cc' },
     tick = CC.tick,
+})
+
+-- ---------------------------------------------------------------- silence (2026-11-22, levi asked)
+-- A White Mage (Silence at 15) or Red Mage (18), main or sub, silences the monsters the party is fighting that cast
+-- magic, before its other spells: a monster with MP, or one seen casting. Not one asleep (that is the sleep's), one
+-- already silenced, or one that resisted three times (NMs: twice). A White Mage only while nobody is under 50% HP and
+-- with a fifth of its MP kept for cures; not with its magic switch off. Switch: !squad silence on|off.
+CC.silTries = CC.silTries or {} -- [foe id] = casts that did not silence it
+CC.silAt    = CC.silAt or {}    -- [foe id] = { by = mate id, at = time } of the last try
+CC.casters  = CC.casters or {}  -- [foe id] = true once seen casting
+
+local function silenceSpell(player, trust)
+    local j, s = trust:getMainJob(), trust:getSubJob()
+    if j == xi.job.WHM or j == xi.job.RDM or s == xi.job.WHM or s == xi.job.RDM then
+        return P.bestKnown(player, trust, { 'SILENCE' })
+    end
+
+    return nil
+end
+
+local function castsMagic(foe)
+    local id = foe:getID()
+    local ok, act = pcall(function() return foe:getCurrentAction() end)
+    if ok and act == 30 then
+        CC.casters[id] = true
+    end
+
+    if CC.casters[id] then
+        return true
+    end
+
+    local okMp, mp = pcall(function() return foe:getMaxMP() end)
+    return okMp and tonumber(mp) ~= nil and mp > 0
+end
+
+function CC.silenceTick(player, trust)
+    if not P.free(trust) or not P.allowed(player, trust, 'magic') or not xi.effect.SILENCE then
+        return
+    end
+
+    local spellId = silenceSpell(player, trust)
+    if spellId == nil then
+        return
+    end
+
+    local healer = trust:getMainJob() == xi.job.WHM
+    if healer then
+        for _, member in ipairs(P.party(player)) do
+            local ok, low = pcall(function() return member:isAlive() and member:getHPP() < 50 end)
+            if ok and low then
+                return
+            end
+        end
+    end
+
+    local now = os.time()
+    local busy = fought(player)
+    for _, foe in ipairs(P.foes(player, CC.FOE_AREA)) do
+        local id = foe:getID()
+        local last = CC.silAt[id]
+        local isNM = false
+        pcall(function() isNM = foe:isNM() and true or false end)
+        if busy[id] and not asleep(foe) and castsMagic(foe) then
+            if foe:hasStatusEffect(xi.effect.SILENCE) then
+                CC.silTries[id] = 0
+            elseif (CC.silTries[id] or 0) < (isNM and 2 or CC.TRIES) and (last == nil or now - last.at >= 6) and
+                trust:checkDistance(foe) <= CC.RANGE then
+                local reserve = healer and math.floor(trust:getMaxMP() * 0.2) or CC.RESERVE
+                if P.cast(trust, spellId, foe, reserve) then
+                    if last ~= nil and now - last.at < 30 then
+                        CC.silTries[id] = (CC.silTries[id] or 0) + 1 -- (the last try did not stick)
+                    else
+                        P.say(player, trust, string.format('Silencing %s.', (string.gsub(tostring(foe:getPacketName()), '_', ' '))))
+                    end
+
+                    CC.silAt[id] = { by = trust:getID(), at = now }
+                    return
+                end
+            end
+        end
+    end
+end
+
+P.register('silence', {
+    title = 'White and Red Mage mates silence the monsters that cast magic',
+    words = { 'silence' },
+    tick = CC.silenceTick,
 })
 
 return m
