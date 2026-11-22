@@ -4703,6 +4703,7 @@ end
 -- Every gambit of a squad mate goes through addGambit below. The mate's ROLE decides which kinds of gambit it keeps, and its MODE
 -- decides how early it heals and how much mana it holds back. "auto" and "balanced" change nothing at all.
 --   tank     keeps Provoke, Sentinel, Holy Circle, Third Eye, Yonin, Flash and its own buffs. Heals only when someone is in real trouble.
+--            Never uses Berserk, Last Resort or Aggressor (they trade defense or evasion for damage), not even from a Rule Set.
 --   damage   keeps attacks, nukes, ranged attacks and its own buffs. Heals only when someone is in real trouble.
 --   healer   keeps cures, status removal and buffs for the party. Does not nuke, shoot or weaken the enemy.
 --   support  keeps buffs, weakening spells, status removal and normal cures. Does not nuke.
@@ -4734,6 +4735,7 @@ local CATEGORY_NAMES =
     ja =
     {
         tankja  = { 'PROVOKE', 'SENTINEL', 'HOLY_CIRCLE', 'THIRD_EYE', 'YONIN' },
+        dpsja   = { 'BERSERK', 'LAST_RESORT', 'AGGRESSOR' }, -- (2026-11-22, levi) lower defense/evasion: not for a tank
         utility = { 'CONVERT', 'CHAKRA' },
     },
 }
@@ -4749,6 +4751,7 @@ local ROLE_KEEPS =
     ranged  = { tank = false,       damage = true,        healer = false, support = true },
     tankja  = { tank = true,        damage = false,       healer = false, support = false },
     meleeja = { tank = true,        damage = true,        healer = false, support = false },
+    dpsja   = { tank = false,       damage = true,        healer = false, support = false },
 }
 
 local categoryIds = nil
@@ -4917,7 +4920,12 @@ local function addGambit(mob, target, condition, action, retry)
         end
     end
 
-    if activeBehavior ~= nil and (activeBehavior.role ~= 'auto' or activeBehavior.mode ~= 'balanced') then
+    -- (2026-11-22, levi) a tank's Rule Set is otherwise untouched by its role, but still never Berserks (see squadSpawn)
+    if activeBehavior ~= nil and activeBehavior.ruleSet then
+        if classify(action) == 'dpsja' then
+            return
+        end
+    elseif activeBehavior ~= nil and (activeBehavior.role ~= 'auto' or activeBehavior.mode ~= 'balanced') then
         local keep, adjusted = behaviorFilter(activeBehavior.role, activeBehavior.mode, target, condition, action)
         if not keep then
             return
@@ -5569,7 +5577,7 @@ local function squadSpawn(mob)
     local okRs, rulesets = pcall(require, 'modules/custom/lua/squad_rulesets')
     local customSet = okRs and type(rulesets) == 'table' and rulesets.forMob(mob) or nil
     if customSet ~= nil then
-        activeBehavior = nil
+        activeBehavior = (role == 'tank') and { role = role, mode = mode, ruleSet = true } or nil
         profileLevel = mob:getMainLvl()
         applyRules(mob, customSet.rules, false)
         if main.stance then
