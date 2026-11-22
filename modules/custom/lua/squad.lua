@@ -283,6 +283,7 @@ local function usage(player)
     say(player, '!squad camp levels <low> <high> | reset   - monster levels the puller goes for, against yours (e.g. -10 0)')
     say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
     say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
+    say(player, '!squad extras   - party-play extras (skillchain calls, sleep, smart heals, pull calls, lines, buffs, pets): !squad <word> on|off')
     say(player, '!squad chat [on|off|test]   - in-character party chat with your mates')
     say(player, 'Party chat: /p !note <text>   - add a memory to their adventure journal')
     say(player, '!startergear   - basic level 1 gear for you and every squad mate   (!startergear me | !startergear squad)')
@@ -2427,6 +2428,11 @@ local function callMate(player, mate)
         print('[squad] enchantments: ' .. tostring(enchantErr))
     end
 
+    -- (2026-11-22, levi) the squad extras: callouts, sleep, healing, pull calls, lines, buffs, pets (squad_plus.lua)
+    if type(rawget(_G, 'SQUAD_PLUS')) == 'table' then
+        pcall(SQUAD_PLUS.onSpawn, player, trust, mate)
+    end
+
     trust:addListener('WEAPONSKILL_USE', 'SQUAD_SC', function(mobArg, target, skill)
         pcall(skillchainCall, mobArg, target, skill)
     end)
@@ -3063,6 +3069,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
     end
     local squad = GetSquad(charId)
     action = action and string.lower(action) or nil
+
+    -- (2026-11-22, levi) the squad extras' switches and commands (squad_plus.lua): !squad extras, !squad <word> on|off
+    if type(rawget(_G, 'SQUAD_PLUS')) == 'table' and SQUAD_PLUS.command(player, action, arg1, arg2, arg3, arg4) then
+        return
+    end
 
     if action == nil or action == 'list' or action == 'call' then
         chatRoster(player, squad)
@@ -5133,6 +5144,11 @@ local function addGambit(mob, target, condition, action, retry)
         end
 
         condition = adjusted
+    end
+
+    -- (2026-11-22) a mate with a magic burst rule is marked, so the squad extras add no second one (squad_callouts.lua)
+    if action[1] == ai.r.MA and action[2] == ai.s.MB_ELEMENT then
+        mob:setLocalVar('SQUAD_HAS_MB', 1)
     end
 
     if retry ~= nil then
