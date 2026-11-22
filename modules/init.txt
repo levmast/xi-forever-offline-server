@@ -156,5 +156,9 @@ custom/lua/crowds.lua
 custom/cpp/bots.cpp
 
 custom/lua/bots.lua
+
+# Placeholder names: NM placeholders show "placeholder" as their name (data: tools/gen_placeholder_names.py)
+custom/lua/placeholder_names.lua
+
 # Loaded LAST: overrides here win over the era/phoenix folders above (fast travel overrides the Survival Guide menu)
 custom/late
