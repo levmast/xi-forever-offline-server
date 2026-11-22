@@ -5146,6 +5146,14 @@ local function addGambit(mob, target, condition, action, retry)
         condition = adjusted
     end
 
+    -- (2026-11-22) the everyday "best Cure" rules go to the squad extras' smart healing instead (squad_heal.lua)
+    if type(rawget(_G, 'SQUAD_HEAL')) == 'table' then
+        local okHeal, skipHeal = pcall(SQUAD_HEAL.skipGambit, mob, target, condition, action)
+        if okHeal and skipHeal then
+            return
+        end
+    end
+
     -- (2026-11-22) a mate with a magic burst rule is marked, so the squad extras add no second one (squad_callouts.lua)
     if action[1] == ai.r.MA and action[2] == ai.s.MB_ELEMENT then
         mob:setLocalVar('SQUAD_HAS_MB', 1)
