@@ -455,6 +455,9 @@ do
                 if hpp > 0 and hpp < 50 and now >= mob:getLocalVar('SQUAD_TEND_NEXT') then
                     mob:setLocalVar('SQUAD_TEND_NEXT', now + TEND_SECONDS)
                     pet:addHP(math.floor(pet:getMaxHP() * 0.3))
+                    if rawget(_G, 'SQUAD_PETJOBS') then -- (2026-11-22, levi) called as Reward by the squad extras
+                        pcall(SQUAD_PETJOBS.onTend, mob, pet)
+                    end
                 end
             end
 
