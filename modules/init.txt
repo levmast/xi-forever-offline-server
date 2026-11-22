@@ -88,6 +88,7 @@ custom/lua/squad_actions.lua
 custom/lua/squad_bard_walk.lua
 # (2026-11-22, levi) squad extras, each switchable with !squad <word> on|off (hub: custom/lua/squad_plus.lua, required)
 custom/lua/squad_callouts.lua
+custom/lua/squad_cc.lua
 custom/sql/squad.sql
 
 # Fast travel

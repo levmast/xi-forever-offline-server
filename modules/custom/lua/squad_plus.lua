@@ -12,6 +12,7 @@
 -- squad.lua calls SQUAD_PLUS.onSpawn(player, trust, mate) once a mate is called, and SQUAD_PLUS.command(...) before its
 -- own !squad commands. A feature registers itself with SQUAD_PLUS.register(key, def):
 --   def = { title = 'one line', words = { 'callouts', ... }, onSpawn = function(player, trust, mate) end,
+--           tick = function(player, trust) end (optional: once a second per mate while the switch is on),
 --           command = function(player, word, arg1, arg2, arg3) return true end (optional, for more than on/off) }
 -- A feature's switch is the char var SQUAD_X_<KEY>: 1 = off, anything else = on (so every feature starts on).
 -- !squad extras lists them; !squad <word> on|off switches one.
@@ -384,6 +385,29 @@ function P.mainTarget(player)
     return first
 end
 
+-- ---------------------------------------------------------------- the tick
+-- A feature with def.tick(player, trust) gets it once a second per mate (while its switch is on), from one TICK
+-- listener per mate (the AI tick: fighting or not).
+function P.tickMate(trust)
+    local now = os.time()
+    if trust:getLocalVar('SQX_TICK_AT') == now then
+        return
+    end
+
+    trust:setLocalVar('SQX_TICK_AT', now)
+    local player = P.master(trust)
+    if player == nil or not trust:isAlive() then
+        return
+    end
+
+    for _, key in ipairs(P.order) do
+        local def = P.features[key]
+        if def and type(def.tick) == 'function' and P.on(player, key) then
+            P.try(key .. ' tick', def.tick, player, trust)
+        end
+    end
+end
+
 -- ---------------------------------------------------------------- hooks from squad.lua
 function P.onSpawn(player, trust, mate)
     for _, key in ipairs(P.order) do
@@ -392,6 +416,10 @@ function P.onSpawn(player, trust, mate)
             P.try(key .. ' onSpawn', def.onSpawn, player, trust, mate)
         end
     end
+
+    trust:addListener('TICK', 'SQX_TICK', function(mob)
+        P.try('tick', P.tickMate, mob)
+    end)
 end
 
 local function list(player)
