@@ -1372,9 +1372,33 @@ local function campTick(mob)
         everyone = { player }
     end
 
+    -- (2026-11-21, levi) MP holds a pull only for the healer: a mate set to the healer role (or on auto as a WHM), or a
+    -- character on WHM. HP and resting still count for everyone. With no healer out, everyone's MP counts as before.
+    local function isHealer(member)
+        if member:getObjType() == xi.objType.PC then
+            return member:getMainJob() == xi.job.WHM
+        end
+
+        local role = decodeBehavior(player:getCharVar('SQUAD_AI_' .. member:getLocalVar('SQUAD_ID')))
+        return role == 'healer' or (role == 'auto' and member:getMainJob() == xi.job.WHM)
+    end
+
+    local anyHealer = false
+    for _, member in ipairs(everyone) do
+        if member:getObjType() == xi.objType.PC and isHealer(member) then anyHealer = true end
+    end
+
+    for _, trust in ipairs(trusts) do
+        if isHealer(trust) then anyHealer = true end
+    end
+
+    local function mpLow(member)
+        return (not anyHealer or isHealer(member)) and member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') < CAMP_READY_MP
+    end
+
     for _, member in ipairs(everyone) do
         if member:getObjType() == xi.objType.PC and (member:getAnimation() == xi.animation.HEALING or percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP or
-            (member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') < CAMP_READY_MP)) then
+            mpLow(member)) then
             -- (2026-11-21) the line names who is short and of what: it was read as the healer's MP when it was yours
             local hpLow = percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP
             local short = member:getAnimation() == xi.animation.HEALING and 'is resting' or (hpLow and 'needs HP' or 'needs MP')
@@ -1391,8 +1415,7 @@ local function campTick(mob)
     end
 
     for _, trust in ipairs(trusts) do
-        if not trust:isAlive() or percentOf(trust, 'getHP', 'getMaxHP') < CAMP_READY_HP or
-            (trust:getMaxMP() > 0 and percentOf(trust, 'getMP', 'getMaxMP') < CAMP_READY_MP) then
+        if not trust:isAlive() or percentOf(trust, 'getHP', 'getMaxHP') < CAMP_READY_HP or mpLow(trust) then
             if not c.waitSaid then
                 c.waitSaid = true
                 campSay(player, puller, string.format('waiting a bit, %s needs %s', trust:getPacketName(),
