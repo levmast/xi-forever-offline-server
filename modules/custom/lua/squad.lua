@@ -279,6 +279,7 @@ local function usage(player)
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
     say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
+    say(player, '!squad rest fight on | off   - healers and mages low on MP sit down mid-fight while nobody needs them')
     say(player, '!squad camp levels <low> <high> | reset   - monster levels the puller goes for, against yours (e.g. -10 0)')
     say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
     say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
@@ -2667,14 +2668,133 @@ local REST_EVERY_SEC = 10
 local REST_HP_PERCENT = 10  -- of their max HP per tick
 local REST_MP_PERCENT = 10  -- of their max MP per tick
 
+-- Resting mid-fight (2026-11-22, levi): a healer or mage (role healer or support, or a WHM or BLM that is not a tank) under
+-- fightRest.BELOW % MP lets go of the fight and sits down while the others fight on. It stands up and joins again when it is
+-- needed: a monster turns on it, it gets hit, someone in the party drops under fightRest.NEED_HP % HP (healers only), the
+-- fight is over, or its MP is back to fightRest.UNTIL %. While it sits it holds SQUAD_IDLE (trust_controller.cpp: the stock AI
+-- and its gambits do nothing), so it does not cast from the floor. !squad rest fight off turns it off (SQUAD_FIGHT_NOREST).
+-- (one table: squad.lua's main chunk is at LuaJIT's 200 locals)
+local fightRest = { BELOW = 30, UNTIL = 80, NEED_HP = 60, AGAIN = 10 } -- AGAIN: seconds after standing up before it may sit down again
+
+-- someone else stopped this mate (!idle on, or the Squads window's Actions OFF): their SQUAD_IDLE is not ours to clear
+function fightRest.stoppedByPlayer(mob, master)
+    return master:getCharVar('SQUAD_IDLE_ALL') == 1 or mob:getLocalVar('SQUAD_ACT_OFF') == 1
+end
+
+function fightRest.wanted(mob, master, already)
+    if master:getCharVar('SQUAD_FIGHT_NOREST') == 1 or mob:getMaxMP() == 0 or mob:getLocalVar('SQUAD_PULL_PHASE') ~= 0 or
+        fightRest.stoppedByPlayer(mob, master) or (not already and (mob:getLocalVar('SQUAD_IDLE') ~= 0 or os.time() < mob:getLocalVar('SQUAD_FR_NEXT')))
+    then
+        return false
+    end
+
+    local role = decodeBehavior(master:getCharVar('SQUAD_AI_' .. mob:getLocalVar('SQUAD_ID')))
+    local job  = mob:getMainJob()
+    local healer = role == 'healer' or (role == 'auto' and job == xi.job.WHM)
+    if role == 'tank' or not (healer or role == 'support' or job == xi.job.WHM or job == xi.job.BLM) then
+        return false
+    end
+
+    local mpp = percentOf(mob, 'getMP', 'getMaxMP')
+    if mpp >= (already and fightRest.UNTIL or fightRest.BELOW) then
+        return false
+    end
+
+    -- not in the middle of a spell, a weapon skill or an item (only meleeing or standing about)
+    local act = mob:getCurrentAction()
+    if not already and act ~= 1 and act ~= 16 then
+        return false
+    end
+
+    -- hit while sitting: up
+    if already and mob:getHP() < mob:getLocalVar('SQUAD_FR_HP') then
+        return false
+    end
+
+    local function onMe(entity)
+        local foe = entity:isEngaged() and entity:getTarget() or nil
+        local foeTarget = foe and foe:getTarget()
+        return foeTarget ~= nil and foeTarget:getID() == mob:getID()
+    end
+
+    if mob:isEngaged() and onMe(mob) then
+        return false
+    end
+
+    local party = master:getPartyWithTrusts() or {}
+    if next(party) == nil then
+        party = { master }
+    end
+
+    local fightOn = false
+    for _, member in pairs(party) do
+        if member:isAlive() and member:getID() ~= mob:getID() then
+            if healer and percentOf(member, 'getHP', 'getMaxHP') < fightRest.NEED_HP then
+                return false
+            end
+
+            if member:isEngaged() then
+                fightOn = true
+                if onMe(member) then
+                    return false
+                end
+            end
+        end
+    end
+
+    return fightOn
+end
+
+function fightRest.stop(mob, master)
+    mob:setLocalVar('SQUAD_FIGHT_REST', 0)
+    mob:setLocalVar('SQUAD_FR_NEXT', os.time() + fightRest.AGAIN)
+    if not fightRest.stoppedByPlayer(mob, master) then
+        mob:setLocalVar('SQUAD_IDLE', 0) -- (the engine engages it again next tick)
+    end
+end
+
 restTick = function(mob)
     local master = mob:getMaster()
-    if master == nil or master:getObjType() ~= xi.objType.PC or not mob:isAlive() then
+    if master == nil or master:getObjType() ~= xi.objType.PC then
+        return
+    end
+
+    if not mob:isAlive() then
+        if mob:getLocalVar('SQUAD_FIGHT_REST') == 1 then
+            fightRest.stop(mob, master)
+        end
+
         return
     end
 
     local sitting = mob:getAnimation() == xi.animation.HEALING
     local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged()
+
+    -- Resting mid-fight (above): looked at once a second, the answer is kept in between
+    local fightResting = mob:getLocalVar('SQUAD_FIGHT_REST') == 1
+    local now = os.time()
+    if resting then
+        if fightResting then
+            fightRest.stop(mob, master)
+        end
+    elseif fightResting and now < mob:getLocalVar('SQUAD_FR_AT') then
+        resting = true
+    else
+        mob:setLocalVar('SQUAD_FR_AT', now + 1)
+        local want = fightRest.wanted(mob, master, fightResting)
+        if want then
+            mob:setLocalVar('SQUAD_FIGHT_REST', 1)
+            mob:setLocalVar('SQUAD_IDLE', 1)
+            mob:setLocalVar('SQUAD_FR_HP', mob:getHP())
+            if mob:isEngaged() then
+                mob:disengage()
+            end
+
+            resting = true
+        elseif fightResting then
+            fightRest.stop(mob, master)
+        end
+    end
 
     -- At camp (unless !squad camp rest off): rest between fights while the pull is out, until full again
     local c = camps[master:getID()]
@@ -2694,7 +2814,6 @@ restTick = function(mob)
         return
     end
 
-    local now = os.time()
     if not sitting then
         mob:setAnimation(xi.animation.HEALING)
         mob:setLocalVar('SQUAD_REST_AT', now + REST_FIRST_SEC)
@@ -3745,6 +3864,18 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
             say(player, ok and line or ('diag failed: ' .. tostring(line)))
             print('[squad] diag ' .. (ok and line or tostring(line)))
         end
+        return
+    end
+
+    if action == 'rest' then
+        -- (2026-11-22, levi) resting mid-fight for MP, see fightRest.wanted (char var SQUAD_FIGHT_NOREST: 0 = on, the default)
+        local on = string.lower(arg2 or arg1 or '')
+        if on == 'on' or on == 'off' then
+            player:setCharVar('SQUAD_FIGHT_NOREST', on == 'off' and 1 or 0)
+        end
+
+        say(player, player:getCharVar('SQUAD_FIGHT_NOREST') == 1 and 'Your mates keep standing in a fight (!squad rest fight on to change).'
+            or 'Healers and mages low on MP sit down mid-fight while nobody needs them, and stand up when they are (!squad rest fight off to change).')
         return
     end
 
