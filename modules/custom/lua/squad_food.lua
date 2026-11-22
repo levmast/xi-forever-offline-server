@@ -19,6 +19,7 @@ food.roleByJob =
     [1] = 'attack', [2] = 'attack', [3] = 'healer', [4] = 'mage', [5] = 'mage', [6] = 'attack', [7] = 'tank', [8] = 'attack',
     [9] = 'attack', [10] = 'mage', [11] = 'ranged', [12] = 'attack', [13] = 'attack', [14] = 'attack', [15] = 'mage',
     [16] = 'attack', [17] = 'ranged', [18] = 'attack', -- BLU, COR, PUP
+    [19] = 'attack', [20] = 'mage',                    -- DNC, SCH (2026-11-22)
 }
 
 -- Level ranges, and the food each kind of job eats in each range

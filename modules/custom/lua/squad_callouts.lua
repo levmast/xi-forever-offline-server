@@ -81,11 +81,11 @@ local function joinOr(list)
     return table.concat(list, ', ', 1, #list - 1) .. ' or ' .. list[#list]
 end
 
--- a mage mate who can speak for the party (it would burst): BLM, RDM, or a /BLM, /RDM
+-- a mage mate who can speak for the party (it would burst): BLM, RDM, SCH, or a /BLM, /RDM
 local function mageMate(player)
     for _, trust in ipairs(P.trusts(player)) do
         local j, s = trust:getMainJob(), trust:getSubJob()
-        if trust:isAlive() and (j == xi.job.BLM or j == xi.job.RDM or s == xi.job.BLM or s == xi.job.RDM) then
+        if trust:isAlive() and (j == xi.job.BLM or j == xi.job.RDM or j == xi.job.SCH or s == xi.job.BLM or s == xi.job.RDM) then
             return trust
         end
     end

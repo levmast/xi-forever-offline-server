@@ -37,6 +37,9 @@ xi.settings.main =
     ENABLE_ROV       = 1,
     ENABLE_TVR       = 1,
     ENABLE_VOIDWATCH = 1, -- Not an expansion, but has its own storyline. (Not Implemented)
+    -- Era rules (modules/custom/lua/era_rules.lua): 1 = keep the earlier era's balance while this expansion's content is on.
+    -- ENABLE_WOTG = 1 with ERA_RULES_WOTG = 1: Wings of the Goddess zones, jobs, spells and quests with Aht Urhgan-era numbers.
+    ERA_RULES_WOTG   = 1,
 
     -- MOG HOUSE
     ENABLE_MOG_HOUSE_2F = 1, -- Enables Access to Mog House 2F / Mog Safe 2.

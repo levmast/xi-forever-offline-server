@@ -35,6 +35,7 @@ local jobIds =
     WAR = 1, MNK = 2, WHM = 3, BLM = 4, RDM = 5, THF = 6, PLD = 7, DRK = 8,
     BST = 9, BRD = 10, RNG = 11, SAM = 12, NIN = 13, DRG = 14, SMN = 15,
     BLU = 16, COR = 17, PUP = 18, -- v1.17 (Treasures of Aht Urhgan jobs; your character must have unlocked them)
+    DNC = 19, SCH = 20,           -- (2026-11-22) Wings of the Goddess jobs (needs ENABLE_WOTG = 1 and the jobs unlocked)
 }
 
 local jobNames = {}
@@ -48,6 +49,7 @@ local jobTitles =
     [1] = 'Warrior', [2] = 'Monk', [3] = 'White Mage', [4] = 'Black Mage', [5] = 'Red Mage',
     [6] = 'Thief', [7] = 'Paladin', [8] = 'Dark Knight', [9] = 'Beastmaster', [10] = 'Bard',
     [11] = 'Ranger', [12] = 'Samurai', [13] = 'Ninja', [14] = 'Dragoon', [15] = 'Summoner',
+    [16] = 'Blue Mage', [17] = 'Corsair', [18] = 'Puppetmaster', [19] = 'Dancer', [20] = 'Scholar',
 }
 
 local raceIds =
@@ -1034,7 +1036,7 @@ end
 -- The opener calls it in party chat, so you can close it yourself. Mages magic burst (their job rules).
 -----------------------------------
 local SC_MELEE    = { [1] = true, [2] = true, [5] = true, [6] = true, [7] = true, [8] = true, [9] = true, [12] = true, [13] = true,
-                      [14] = true, [16] = true, [17] = true, [18] = true }
+                      [14] = true, [16] = true, [17] = true, [18] = true, [19] = true }
 local SC_HOLD     = 1500  -- a closer weapon skills anyway at this much TP (was 2000)
 local SC_HOLD_ONE = 1500  -- a lone melee mate (holding for yours)
 local SC_ROLE     = { opener = 1, closer = 2, alone = 3 }
@@ -3526,7 +3528,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             sub ~= 0 and jobNames[sub] or ((mate.sjob ~= 0 and mate.sjob ~= mate.mjob) and jobNames[mate.sjob] or '-'), subLevel, role, mode, raceNames[mate.race] or '?', switchesOf(player, mate.id))) -- (a support job set but not active yet: level 0)
 
         local jobs = {}
-        for job = 1, 18 do
+        for job = 1, 20 do
             if mate.jobs[job] ~= nil then
                 jobs[#jobs + 1] = { job, mate.jobs[job].level }
             end
@@ -4666,7 +4668,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         return
     elseif action == 'levels' then
         say(player, string.format('%s - job levels (unlisted jobs are level 1):', mate.name))
-        for id = 1, 18 do
+        for id = 1, 20 do
             local info = mate.jobs[id]
             if info ~= nil then
                 say(player, string.format('  %s %d  (%d exp)', jobNames[id], info.level, info.exp))
@@ -5142,7 +5144,7 @@ local CATEGORY_NAMES =
     family =
     {
         heal   = { 'CURE' },
-        buff   = { 'HASTE', 'PHALANX', 'PROTECT', 'PROTECTRA', 'SHELL', 'SHELLRA', 'MARCH', 'VALOR_MINUET', 'UTSUSEMI' },
+        buff   = { 'HASTE', 'PHALANX', 'PROTECT', 'PROTECTRA', 'SHELL', 'SHELLRA', 'MARCH', 'VALOR_MINUET', 'UTSUSEMI', 'REGEN' },
         debuff = { 'DIA', 'DISTRACT', 'HOJO', 'KURAYAMI', 'PARALYZE', 'SLOW' },
         nuke   = { 'BANISH' },
     },
@@ -5158,7 +5160,11 @@ local CATEGORY_NAMES =
     {
         tankja  = { 'PROVOKE', 'SENTINEL', 'HOLY_CIRCLE', 'THIRD_EYE', 'YONIN' },
         dpsja   = { 'BERSERK', 'LAST_RESORT', 'AGGRESSOR' }, -- (2026-11-22, levi) lower defense/evasion: not for a tank
-        utility = { 'CONVERT', 'CHAKRA' },
+        utility = { 'CONVERT', 'CHAKRA', 'DRAIN_SAMBA', 'HASTE_SAMBA', 'LIGHT_ARTS', 'DARK_ARTS', 'SUBLIMATION' },
+        -- (2026-11-22) Dancer: waltzes heal, Healing Waltz cleanses, steps and Violent Flourish weaken the foe
+        heal    = { 'CURING_WALTZ' },
+        cleanse = { 'HEALING_WALTZ' },
+        debuff  = { 'QUICKSTEP', 'BOX_STEP', 'VIOLENT_FLOURISH' },
     },
 }
 
@@ -5810,6 +5816,104 @@ jobs[jobIds.PUP] =
     stance = function(mob)
         mob:setTrustTPSkillSettings(ai.tp.ASAP, ai.s.HIGHEST, 1000)
         mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MELEE)
+    end,
+}
+
+-- Dancer (Wings of the Goddess, 2026-11-22): a melee job that heals with TP.
+-- Curing Waltz 15 (the strongest waltz it has the TP for) on anyone below 50%, Healing Waltz 35 on an ailment it can
+-- remove, a Samba 5 (Drain Samba; Haste Samba on undead, which can't be drained), a Step now and then for finishing
+-- moves (Quickstep 20, Box Step 30, both lower the foe's defenses) and Violent Flourish 45 to stop a weapon skill or a
+-- spell. No Saber Dance or Trance: Saber Dance stops waltzes, Trance is a two-hour.
+jobs[jobIds.DNC] =
+{
+    ja = function(mob, isSub)
+        if profileLevel >= 15 then
+            addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, isSub and 40 or 50), { ai.r.JA, ai.s.HIGHEST_WALTZ, xi.ja.CURING_WALTZ })
+        end
+
+        addJA(mob, 35, 'HEALING_WALTZ', ai.t.PARTY, ai.c.STATUS_FLAG, xi.effectFlag.ERASABLE)
+
+        if profileLevel >= 45 then
+            for _, readying in ipairs({ ai.c.READYING_WS, ai.c.READYING_MS, ai.c.CASTING_MA }) do
+                addGambit(mob, ai.t.TARGET, cond(readying, 0), { ai.r.JA, ai.s.SPECIFIC, xi.ja.VIOLENT_FLOURISH })
+            end
+        end
+
+        if profileLevel >= 5 then
+            addGambit(mob, ai.t.TARGET, cond(ai.c.IS_ECOSYSTEM, xi.ecosystem.UNDEAD), { ai.r.JA, ai.s.SPECIFIC, xi.ja.HASTE_SAMBA }, 60)
+            addGambit(mob, ai.t.SELF, cond(ai.c.NO_SAMBA, 0), { ai.r.JA, ai.s.BEST_SAMBA, xi.ja.DRAIN_SAMBA })
+        end
+
+        -- One step a minute at most: each costs 100 TP, and the TP is better spent on waltzes and weapon skills
+        if profileLevel >= 30 then
+            addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'SLUGGISH_DAZE_3'), { ai.r.JA, ai.s.SPECIFIC, xi.ja.BOX_STEP }, 60)
+        elseif profileLevel >= 20 then
+            addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'LETHARGIC_DAZE_3'), { ai.r.JA, ai.s.SPECIFIC, xi.ja.QUICKSTEP }, 60)
+        end
+    end,
+    stance = function(mob)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MELEE)
+    end,
+}
+
+-- Scholar (Wings of the Goddess, 2026-11-22): Light Arts and white magic, or Dark Arts and black magic.
+-- Its role decides: damage = Dark Arts (storm, helix, magic bursts and nukes); any other role = Light Arts (cures, -na
+-- spells, Regen on the tank, Protect and Shell), with a nuke now and then when it has MP to spare (not as a healer).
+-- Sublimation 35 charges while MP is high and is used when MP runs low. As a sub job: Arts and cures only.
+local function scholarDark()
+    return activeBehavior ~= nil and activeBehavior.role == 'damage'
+end
+
+jobs[jobIds.SCH] =
+{
+    ja = function(mob, isSub)
+        if scholarDark() then
+            addJA(mob, 10, 'DARK_ARTS', ai.t.SELF, ai.c.NOT_STATUS, 'DARK_ARTS')
+        else
+            addJA(mob, 10, 'LIGHT_ARTS', ai.t.SELF, ai.c.NOT_STATUS, 'LIGHT_ARTS')
+        end
+
+        if not isSub and profileLevel >= 35 then
+            addGambit(mob, ai.t.SELF, both(cond(ai.c.NOT_STATUS, 'SUBLIMATION_ACTIVATED'), cond(ai.c.NOT_STATUS, 'SUBLIMATION_COMPLETE')),
+                { ai.r.JA, ai.s.SPECIFIC, xi.ja.SUBLIMATION })
+            addGambit(mob, ai.t.SELF, both(cond(ai.c.STATUS, 'SUBLIMATION_COMPLETE'), cond(ai.c.MPP_LT, 50)),
+                { ai.r.JA, ai.s.SPECIFIC, xi.ja.SUBLIMATION })
+        end
+    end,
+    magic = function(mob, isSub)
+        local dark = scholarDark()
+
+        addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, dark and 35 or 75), family('CURE'))
+        if isSub then
+            return
+        end
+
+        if not dark then
+            addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'POISON'), spell('POISONA'))
+            addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'PARALYSIS'), spell('PARALYNA'))
+            addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'BLINDNESS'), spell('BLINDNA'))
+            addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'SILENCE'), spell('SILENA'))
+            addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'DISEASE'), spell('VIRUNA'))
+            addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'PETRIFICATION'), spell('STONA'))
+            addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'CURSE_I'), spell('CURSNA'))
+            addGambit(mob, ai.t.TANK, cond(ai.c.NOT_STATUS, 'REGEN'), family('REGEN'))
+            addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'PROTECT'), family('PROTECT'), 30)
+            addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'SHELL'), family('SHELL'), 30)
+        end
+
+        -- A healer keeps its MP for the party: no storm, helix or nukes
+        if activeBehavior ~= nil and activeBehavior.role == 'healer' then
+            return
+        end
+
+        -- A storm on itself (the day's element), then the helix and the nukes, keeping MP for cures
+        addGambit(mob, ai.t.SELF, cond(ai.c.NO_STORM, 0), { ai.r.MA, ai.s.STORM_DAY, 0 }, 60)
+        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, dark and 0 or 40), cond(ai.c.MB_AVAILABLE, 0)), { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE })
+        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, dark and 20 or 50), cond(ai.c.NOT_STATUS, 'HELIX')), { ai.r.MA, ai.s.HELIX_DAY, 0 }, 30)
+        addGambit(mob, ai.t.TARGET, cond(ai.c.MPP_GTE, dark and 20 or 60), { ai.r.MA, ai.s.BEST_AGAINST_TARGET, 0 }, dark and 15 or 40)
+    end,
+    stance = function(mob)
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, xi.trust.movementType.MID_RANGE)
     end,
 }
 
