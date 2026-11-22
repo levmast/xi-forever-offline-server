@@ -65,6 +65,34 @@ local function scriptFor(itemId)
     return nil
 end
 
+-- the use animation of each item (sql/item_usable.sql, item_usable.animation), read once, for the chat line below
+local animations
+local function animationFor(itemId)
+    if animations == nil then
+        animations = {}
+        local handle = io.open('./sql/item_usable.sql', 'r')
+        if handle ~= nil then
+            for line in handle:lines() do
+                local id, anim = line:match("VALUES %((%d+),'[^']*',%d+,[%d%.]+,(%d+),")
+                if id ~= nil then
+                    animations[tonumber(id)] = tonumber(anim)
+                end
+            end
+            handle:close()
+        end
+    end
+
+    return animations[itemId] or 0
+end
+
+-- "<mate> uses <item>." in the chat log, with the item's use animation, like a player using it (and like the mates eating)
+local function showUse(mob, itemId)
+    pcall(function()
+        -- category 5 = item use finished, resolution 0 = hit, message 28 = "<actor> uses <item>."
+        mob:injectActionPacket(mob:getID(), 5, animationFor(itemId), 0, 0, 28, itemId, itemId)
+    end)
+end
+
 -- The mate as the item script's target: everything goes to the mate, but hasEquipped(item) is true for this item
 -- (a trust has no equipment container, so the real hasEquipped is always false for it).
 local function asWearer(mob, itemId)
@@ -128,6 +156,7 @@ function E.tick(mob)
                 if not ok then
                     print(string.format('[squad] %s could not use item %d: %s', mob:getPacketName(), itemId, tostring(err)))
                 elseif landed then
+                    showUse(mob, itemId)
                     print(string.format('[squad] %s uses the enchantment on item %d', mob:getPacketName(), itemId))
                 end
             end
