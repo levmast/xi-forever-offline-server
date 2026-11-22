@@ -542,37 +542,78 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
     }
 
     // (2026-11-22, levi) The engine's "Best" (HIGHEST) opens with the LAST weapon skill of this list and, among closers
-    // that form equally good skillchains, also keeps the last one. The list is in weapon skill id order, which for
-    // hand-to-hand put Shoulder Tackle (a 2-hit VIT stun) above Combo and Spinning Attack above Raging Fists. Order the
-    // hand-to-hand skills by damage at 1000 TP instead (Adoulin values: Asuran Fists 8 x 1.25, Howling Fist 2 x 2.05
-    // at 1.5 attack, Raging Fists 5 x 1.0, Dragon Kick 2 x 1.7, Combo 3 x 1.0). The menu list above keeps id order.
+    // that form equally good skillchains, also keeps the last one. The list is in weapon skill id order, which put e.g.
+    // Shoulder Tackle above Combo, Moonlight above Seraph Strike and Leg Sweep above Double Thrust. Order each weapon's
+    // skills by damage at 1000 TP instead (this server's Adoulin values: hits x fTP, multi-hit fTP, stat modifiers).
+    // Utility skills (stuns, breaks, MP/HP drain, Starlight/Moonlight, AoE that can wake slept mobs) go first, so they
+    // are only ever picked to close a skillchain. Skills not listed (past ToAU) rank above all listed ones of their
+    // weapon. The menu list above keeps id order; a weapon skill chosen in Gambits still narrows the list to itself.
     {
-        // rank by weapon skill id, higher = stronger; ids not listed keep their place (rank 0, stable sort)
-        static const std::map<uint16, int> dpsRank = {
-            { 2, 1 },  // Shoulder Tackle
-            { 6, 2 },  // Spinning Attack
-            { 3, 3 },  // One Inch Punch
-            { 4, 4 },  // Backhand Blow
-            { 1, 5 },  // Combo
-            { 8, 6 },  // Dragon Kick
-            { 5, 7 },  // Raging Fists
-            { 7, 8 },  // Howling Fist
-            { 10, 9 }, // Final Heaven
-            { 9, 10 }, // Asuran Fists
+        // per weapon, weakest first (weapon skill ids, see data/weapon_skills.yaml)
+        static const std::vector<std::vector<uint16>> weakestFirst = {
+            // hand-to-hand: Shoulder Tackle, Spinning Attack, One Inch Punch, Backhand Blow, Combo, Dragon Kick,
+            // Raging Fists, Howling Fist, Final Heaven, Asuran Fists, Ascetic's Fury, Stringing Pummel
+            { 2, 6, 3, 4, 1, 8, 5, 7, 10, 9, 11, 12 },
+            // dagger: Energy Steal, Energy Drain, Shadowstitch, Wasp Sting, Cyclone, Viper Bite, Gust Slash, Dancing Edge,
+            // Shark Bite, Evisceration, Mercy Stroke, Mandalic Stab, Mordant Rime, Pyrrhic Kleos
+            { 21, 22, 18, 16, 20, 17, 19, 23, 24, 25, 26, 27, 28, 29 },
+            // sword: Spirits Within, Flat Blade, Circle Blade, Atonement, Burning Blade, Fast Blade, Red Lotus Blade,
+            // Shining Blade, Seraph Blade, Swift Blade, Vorpal Blade, Savage Blade, Knights of Round, Expiacion, Death Blossom
+            { 39, 35, 38, 45, 33, 32, 34, 36, 37, 41, 40, 42, 43, 46, 44 },
+            // great sword: Shockwave, Power Slash, Hard Slash, Frostbite, Freezebite, Crescent Moon, Sickle Moon,
+            // Spinning Slash, Ground Strike, Scourge
+            { 52, 49, 48, 50, 51, 53, 54, 55, 56, 57 },
+            // axe: Smash Axe, Gale Axe, Raging Axe, Avalanche Axe, Spinning Axe, Calamity, Mistral Axe, Rampage,
+            // Decimation, Onslaught, Primal Rend
+            { 65, 66, 64, 67, 68, 70, 71, 69, 72, 73, 74 },
+            // great axe: Shield Break, Armor Break, Weapon Break, Full Break, Iron Tempest, Keen Edge, Sturmwind,
+            // Raging Rush, Steel Cyclone, King's Justice, Metatron Torment
+            { 80, 83, 85, 87, 81, 84, 82, 86, 88, 90, 89 },
+            // scythe: Spinning Scythe, Nightmare Scythe, Slice, Dark Harvest, Shadow of Death, Vorpal Scythe, Spiral Hell,
+            // Cross Reaper, Guillotine, Insurgency, Catastrophe
+            { 100, 99, 96, 97, 98, 101, 104, 103, 102, 106, 105 },
+            // polearm: Leg Sweep, Double Thrust, Raiden Thrust, Thunder Thrust, Vorpal Thrust, Skewer, Wheeling Thrust,
+            // Penta Thrust, Impulse Drive, Drakesbane, Geirskogul
+            { 115, 112, 114, 113, 117, 118, 119, 116, 120, 122, 121 },
+            // katana: Blade: Chi, Retsu, Rin, Teki, To, Ei, Jin, Ten, Ku, Kamu, Metsu
+            { 132, 129, 128, 130, 131, 133, 134, 135, 136, 138, 137 },
+            // great katana: Tachi: Hobaku, Enpi, Goten, Kagero, Jinpu, Koki, Yukikaze, Gekko, Kasha, Rana, Kaiten
+            { 145, 144, 146, 147, 148, 149, 150, 151, 152, 154, 153 },
+            // club: Starlight, Moonlight, Brainshaker, Skullbreaker, Shining Strike, True Strike, Seraph Strike, Judgment,
+            // Black Halo, Hexa Strike, Mystic Boon, Randgrith
+            { 163, 164, 162, 165, 160, 166, 161, 167, 169, 168, 171, 170 },
+            // staff: Spirit Taker, Earth Crusher, Shell Crusher, Heavy Swing, Rock Crusher, Starburst, Sunburst,
+            // Full Swing, Retribution, Omniscience, Vidohunir, Garland of Bliss, Gate of Tartarus
+            { 183, 178, 181, 176, 177, 179, 180, 182, 184, 188, 186, 187, 185 },
+            // archery: Flaming Arrow, Piercing Arrow, Dulling Arrow, Blast Arrow, Empyreal Arrow, Arching Arrow,
+            // Sidewinder, Namas Arrow
+            { 192, 193, 194, 197, 199, 198, 196, 200 },
+            // marksmanship: Hot Shot, Split Shot, Sniper Shot, Blast Shot, Detonator, Heavy Shot, Slug Shot, Coronach,
+            // Trueflight, Leaden Salute
+            { 208, 209, 210, 213, 215, 214, 212, 216, 217, 218 },
         };
-        if (weaponType == static_cast<uint8>(xi::SkillType::HandToHand))
+        static const std::map<uint16, int> dpsRank = []()
         {
-            const auto rank = [](const gambits::TrustSkill_t& s)
+            std::map<uint16, int> out;
+            for (const auto& weapon : weakestFirst)
             {
-                const auto found = dpsRank.find(s.skill_id);
-                return found != dpsRank.end() ? found->second : 0;
-            };
-            std::stable_sort(skills.begin(), skills.end(), [&rank](const gambits::TrustSkill_t& a, const gambits::TrustSkill_t& b)
-                             { return rank(a) < rank(b); });
-            if (!skills.empty())
-            {
-                kept += " (opens with " + battleutils::GetWeaponSkill(skills.back().skill_id)->getName() + ")";
+                for (std::size_t i = 0; i < weapon.size(); ++i)
+                {
+                    out[weapon[i]] = static_cast<int>(i) + 1;
+                }
             }
+            return out;
+        }();
+        const auto rank = [](const gambits::TrustSkill_t& s)
+        {
+            const auto found = dpsRank.find(s.skill_id);
+            return found != dpsRank.end() ? found->second : 1000 + static_cast<int>(s.skill_id);
+        };
+        std::stable_sort(skills.begin(), skills.end(), [&rank](const gambits::TrustSkill_t& a, const gambits::TrustSkill_t& b)
+                         { return rank(a) < rank(b); });
+        if (!skills.empty())
+        {
+            kept += " (opens with " + battleutils::GetWeaponSkill(skills.back().skill_id)->getName() + ")";
         }
     }
 
