@@ -273,6 +273,7 @@ local function usage(player)
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
+    say(player, '!squad spells <slot>   - every spell one squad mate has now')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad blu <slot> [set | unset <spell>] | auto   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
@@ -3734,6 +3735,81 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4)
         end
 
         say(player, '"Call all" order: ' .. table.concat(names, ', ') .. '. Dismiss and call everyone to use it now.')
+        return
+    end
+
+    if action == 'spells' and arg1 ~= nil and tonumber(arg1) ~= nil then
+        -- (2026-11-22, levi) !squad spells <slot>: the spells one mate has now, by the rules a call uses (Gambits'
+        -- mateSpells in gambits_squad.lua: main/sub job and level, scroll items, learned scrolls when that option is on)
+        local mate = findMate(squad, tonumber(arg1))
+        local mateSpells = xi.squad.mateSpells
+        if mate == nil then
+            say(player, '!squad spells <slot> - the spells one squad mate has. !squad list shows the slots.')
+            return
+        end
+
+        if type(mateSpells) ~= 'function' then
+            say(player, 'The spell list needs gambits_squad.lua, which did not load.')
+            return
+        end
+
+        local main, sub, subLevel = levelsFor(mate, nil, player)
+        local ok, has, maybe = pcall(mateSpells, player, mate.mjob, main, sub, subLevel)
+        if not ok then
+            say(player, 'Could not build the spell list: ' .. tostring(has))
+            return
+        end
+
+        local function lines(list)
+            local rows = {}
+            for _, entry in ipairs(list or {}) do
+                local name, lv, s = string.match(entry, '^(.-):(%d+)(s?)$')
+                if name then
+                    rows[#rows + 1] = { name = prettySpellName(string.lower(name)), lv = tonumber(lv), sub = s == 's' }
+                end
+            end
+
+            table.sort(rows, function(a, b)
+                if a.lv ~= b.lv then
+                    return a.lv < b.lv
+                end
+
+                return a.name < b.name
+            end)
+            local out, cur = {}, ''
+            for _, r in ipairs(rows) do
+                local item = string.format('%s %d%s', r.name, r.lv, r.sub and '*' or '')
+                if cur ~= '' and #cur + #item + 2 > 120 then
+                    out[#out + 1] = cur
+                    cur = ''
+                end
+
+                cur = cur == '' and item or (cur .. ', ' .. item)
+            end
+
+            if cur ~= '' then
+                out[#out + 1] = cur
+            end
+
+            return out, #rows
+        end
+
+        local subText = sub ~= 0 and string.format('/%s%d', jobNames[sub] or '?', subLevel) or ''
+        local hasLines, hasCount = lines(has)
+        say(player, string.format('%s (%s%d%s) has %d spell(s)%s', mate.name, jobNames[mate.mjob] or '???', main, subText, hasCount,
+            hasCount > 0 and ' (level learned, * = from the support job):' or '.'))
+        for _, text in ipairs(hasLines) do
+            say(player, text)
+        end
+
+        local maybeLines, maybeCount = lines(maybe)
+        if maybeCount > 0 then
+            say(player, string.format('Allowed by job and level but not confirmed (%d): scroll not given yet, or blue magic set when called:', maybeCount))
+            for _, text in ipairs(maybeLines) do
+                say(player, text)
+            end
+        end
+
         return
     end
 

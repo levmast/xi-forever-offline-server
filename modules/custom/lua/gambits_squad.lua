@@ -1360,5 +1360,11 @@ if xi and xi.module and xi.module.registerCommand then
     xi.module.registerCommand('gsq', command)
 end
 
+-- (2026-11-22) for squad.lua's !squad spells <slot>
+if xi then
+    xi.squad = xi.squad or {}
+    xi.squad.mateSpells = G.mateSpells
+end
+
 G._requests = requests
 return G
