@@ -90,6 +90,7 @@ custom/lua/squad_bard_walk.lua
 custom/lua/squad_callouts.lua
 custom/lua/squad_cc.lua
 custom/lua/squad_heal.lua
+custom/lua/squad_pullcalls.lua
 custom/sql/squad.sql
 
 # Fast travel

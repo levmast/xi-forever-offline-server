@@ -1561,7 +1561,9 @@ local function campTick(mob)
         print(string.format('[squad] pull: %s (job %d, MP %d) goes for %s (level %d), %.0f yalms from camp', puller:getPacketName(), puller:getMainJob(),
             puller:getMP(), target:getName(), target:getMainLvl(), campDistance(c, target:getPos())))
     end)
-    campSay(player, puller, string.format('Pulling >> %s <<', target:getName()))
+    -- (2026-11-22, levi) the squad extras' pull calls number the pull: "(1)" (squad_pullcalls.lua)
+    local okCount, count = pcall(function() return rawget(_G, 'SQUAD_PULLCALLS') and SQUAD_PULLCALLS.suffix(player) or '' end)
+    campSay(player, puller, string.format('Pulling >> %s <<', target:getName()) .. (okCount and count or ''))
 end
 
 local function campStatus(player)
