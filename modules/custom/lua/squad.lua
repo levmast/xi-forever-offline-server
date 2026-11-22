@@ -1161,6 +1161,71 @@ function squadCampWhy(c, text)
     end
 end
 
+-- (2026-11-21, levi: camps ran dry after about five minutes) most monsters belong to a spawn region, a big area of the
+-- zone, and a region monster respawns at a random point of it (mob_entity.cpp, CMobEntity::Spawn). Every monster the
+-- squad killed came back somewhere across the region, so the camp's area emptied out. While a camp is up, a monster
+-- that was seen standing near it (not fighting) and respawns away from it is put back on the spot it was last seen on.
+-- That spot was inside its region, so it stays put there (a monster outside its region despawns). If one is back down
+-- within 90 s of a move (it despawned instead of being killed), it is left to the normal spawning from then on.
+-- Global: squad.lua is at the local limit.
+CAMP_KEEP_EVERY = CAMP_KEEP_EVERY or 3 -- seconds between looks
+function squadCampKeepMobs(player, c)
+    local zone = player:getZone()
+    if zone == nil then
+        return
+    end
+
+    local range = campRange(player)
+    local now   = os.time()
+    c.seen      = c.seen or {} -- [mob id] = { x, y, z, rot, dead, movedAt, keep = false when it is left alone }
+    local moved = 0
+    for _, mob in ipairs(zone:getMobs() or {}) do
+        pcall(function()
+            if mob:isNM() or (xi.allegiance and xi.allegiance.MOB and mob:getAllegiance() ~= xi.allegiance.MOB) then
+                return
+            end
+
+            local id  = mob:getID()
+            local rec = c.seen[id]
+            if not mob:isAlive() then
+                if rec and not rec.dead then
+                    rec.dead = true
+                    if rec.movedAt and now - rec.movedAt < 90 then
+                        rec.keep = false
+                    end
+                end
+
+                return
+            end
+
+            local pos    = mob:getPos()
+            local dx, dz = pos.x - c.x, pos.z - c.z
+            local near   = dx * dx + dz * dz <= range * range and math.abs(pos.y - c.y) <= CAMP_MAX_DY
+            if rec and rec.dead then
+                rec.dead = nil
+                if not near and rec.keep ~= false and not mob:isEngaged() then
+                    mob:setSpawn(rec.x, rec.y, rec.z, rec.rot)
+                    mob:setPos(rec.x, rec.y, rec.z, rec.rot)
+                    pcall(function() mob:clearPath() end)
+                    rec.movedAt = now
+                    moved = moved + 1
+                end
+            elseif near and not mob:isEngaged() then
+                if rec == nil then
+                    rec = {}
+                    c.seen[id] = rec
+                end
+
+                rec.x, rec.y, rec.z, rec.rot = pos.x, pos.y, pos.z, pos.rot or 0
+            end
+        end)
+    end
+
+    if moved > 0 then
+        print(string.format('[squad] camp: %d monster(s) respawned away from camp, put back where they were', moved))
+    end
+end
+
 -- once a second (from the mates' ticks): the puller's next pull, when the camp is quiet and everyone is ready
 local function campTick(mob)
     local player = mob:getMaster()
@@ -1198,6 +1263,11 @@ local function campTick(mob)
             c.floorAt = nil
         end
     end)
+
+    if now >= (c.keepAt or 0) then
+        c.keepAt = now + CAMP_KEEP_EVERY
+        pcall(squadCampKeepMobs, player, c)
+    end
 
     if c.puller == 0 then
         squadCampWhy(c, 'puller is set to you (!squad camp puller <slot> to give it to a mate)')
