@@ -541,6 +541,41 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
         }
     }
 
+    // (2026-11-22, levi) The engine's "Best" (HIGHEST) opens with the LAST weapon skill of this list and, among closers
+    // that form equally good skillchains, also keeps the last one. The list is in weapon skill id order, which for
+    // hand-to-hand put Shoulder Tackle (a 2-hit VIT stun) above Combo and Spinning Attack above Raging Fists. Order the
+    // hand-to-hand skills by damage at 1000 TP instead (Adoulin values: Asuran Fists 8 x 1.25, Howling Fist 2 x 2.05
+    // at 1.5 attack, Raging Fists 5 x 1.0, Dragon Kick 2 x 1.7, Combo 3 x 1.0). The menu list above keeps id order.
+    {
+        // rank by weapon skill id, higher = stronger; ids not listed keep their place (rank 0, stable sort)
+        static const std::map<uint16, int> dpsRank = {
+            { 2, 1 },  // Shoulder Tackle
+            { 6, 2 },  // Spinning Attack
+            { 3, 3 },  // One Inch Punch
+            { 4, 4 },  // Backhand Blow
+            { 1, 5 },  // Combo
+            { 8, 6 },  // Dragon Kick
+            { 5, 7 },  // Raging Fists
+            { 7, 8 },  // Howling Fist
+            { 10, 9 }, // Final Heaven
+            { 9, 10 }, // Asuran Fists
+        };
+        if (weaponType == static_cast<uint8>(xi::SkillType::HandToHand))
+        {
+            const auto rank = [](const gambits::TrustSkill_t& s)
+            {
+                const auto found = dpsRank.find(s.skill_id);
+                return found != dpsRank.end() ? found->second : 0;
+            };
+            std::stable_sort(skills.begin(), skills.end(), [&rank](const gambits::TrustSkill_t& a, const gambits::TrustSkill_t& b)
+                             { return rank(a) < rank(b); });
+            if (!skills.empty())
+            {
+                kept += " (opens with " + battleutils::GetWeaponSkill(skills.back().skill_id)->getName() + ")";
+            }
+        }
+    }
+
     // The player chose one weapon skill for this mate: keep only it, if the mate can use it now (else keep them all)
     if (onlyWs != 0)
     {
