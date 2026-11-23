@@ -1475,12 +1475,16 @@ local function campTick(mob)
         return (not anyHealer or isHealer(member)) and member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') < CAMP_READY_MP
     end
 
+    -- (2026-11-23, levi) with camp fight on (squad_campfight.lua, !squad campfight on|off) you sitting down no longer holds
+    -- the pull by itself: the squad keeps pulling and fighting while you rest. Your HP and MP (MP if you are the healer) still do.
+    local restHolds = not (rawget(_G, 'SQUAD_CAMPFIGHT') and SQUAD_CAMPFIGHT.on(player))
     for _, member in ipairs(everyone) do
-        if member:getObjType() == xi.objType.PC and (member:getAnimation() == xi.animation.HEALING or percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP or
+        local sitting = restHolds and member:getAnimation() == xi.animation.HEALING
+        if member:getObjType() == xi.objType.PC and (sitting or percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP or
             mpLow(member)) then
             -- (2026-11-21) the line names who is short and of what: it was read as the healer's MP when it was yours
             local hpLow = percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP
-            local short = member:getAnimation() == xi.animation.HEALING and 'is resting' or (hpLow and 'needs HP' or 'needs MP')
+            local short = sitting and 'is resting' or (hpLow and 'needs HP' or 'needs MP')
             if not c.waitSaid then
                 c.waitSaid = true
                 campSay(player, puller, string.format('waiting a bit, %s %s', member:getName(), short))

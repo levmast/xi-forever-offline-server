@@ -96,6 +96,7 @@ custom/lua/squad_pullcalls.lua
 custom/lua/squad_persona.lua
 custom/lua/squad_buffs.lua
 custom/lua/squad_petjobs.lua
+custom/lua/squad_campfight.lua
 custom/sql/squad.sql
 
 # Fast travel
