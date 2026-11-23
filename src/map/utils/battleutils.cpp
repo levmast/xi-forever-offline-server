@@ -1197,23 +1197,27 @@ void HandleEnspell(CBattleEntity* PAttacker, CBattleEntity* PDefender, action_re
 {
     auto* PChar = dynamic_cast<CCharEntity*>(PAttacker);
 
-    if (PChar)
+    // (XI: Forever Offline, 2026-11-22, levi) squad mates (trusts) on THF main also proc Treasure Hunter on their hits,
+    // the same way a player does (the proc used to be player-only, so a THF mate stayed at its trait level).
+    CBattleEntity* PTHUser = PChar ? static_cast<CBattleEntity*>(PChar) : (PAttacker->objtype == TYPE_TRUST ? PAttacker : nullptr);
+
+    if (PTHUser)
     {
         if (!settings::get<bool>("map.DISABLE_TREASURE_HUNTER_PROCS"))
         {
             // TODO: cleanup lua further so we can handle all this add effect stuff somewhere else
             // Treasure hunter takes priority over enspells
-            if (PChar &&
+            if (PTHUser &&
                 finaldamage > 0 &&
                 isFirstSwing &&
                 PDefender->objtype == TYPE_MOB &&
-                PChar->GetMJob() == xi::Job::THF &&
-                PChar->hasTrait(TRAITTYPE::TRAIT_TREASURE_HUNTER)) // TH trait as a requirement is assumed, but likely. Could this just be a level 15 check instead?
+                PTHUser->GetMJob() == xi::Job::THF &&
+                PTHUser->hasTrait(TRAITTYPE::TRAIT_TREASURE_HUNTER)) // TH trait as a requirement is assumed, but likely. Could this just be a level 15 check instead?
             {
                 auto PMob = dynamic_cast<CMobEntity*>(PDefender);
-                if (PMob && PMob->m_THLvl < (12 + PChar->getMod(xi::Mod::TREASURE_HUNTER_CAP))) // TH proc cap is 12 + job gifts
+                if (PMob && PMob->m_THLvl < (12 + PTHUser->getMod(xi::Mod::TREASURE_HUNTER_CAP))) // TH proc cap is 12 + job gifts
                 {
-                    int16 playerTH = PChar->getMod(xi::Mod::TREASURE_HUNTER);
+                    int16 playerTH = PTHUser->getMod(xi::Mod::TREASURE_HUNTER);
 
                     int16 THdiff = PMob->m_THLvl - playerTH;
 
@@ -1231,7 +1235,7 @@ void HandleEnspell(CBattleEntity* PAttacker, CBattleEntity* PDefender, action_re
                     // Not known if Feint and Gifts are multiplicative or additive. Currently assuming additive
                     // The mob has an evasion down from feint that applies this mod.
                     // The player has job point gifts that apply this mod.
-                    float procRateBonus = 1.0f + (PChar->getMod(xi::Mod::TREASURE_HUNTER_PROC) + PMob->getMod(xi::Mod::TREASURE_HUNTER_PROC)) / 100.0f;
+                    float procRateBonus = 1.0f + (PTHUser->getMod(xi::Mod::TREASURE_HUNTER_PROC) + PMob->getMod(xi::Mod::TREASURE_HUNTER_PROC)) / 100.0f;
 
                     // It's unlikely that SATA bonus is multiplicative SA * TA bonus -- the rate would be astronomically higher if it was
                     // Add the two together if they exist
