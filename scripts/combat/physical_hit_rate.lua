@@ -51,7 +51,7 @@ end
 xi.combat.physicalHitRate.getPhysicalHitRateCap = function(attacker, slot)
     if attacker:isPet() then
         return 0.99
-    elseif attacker:isPC() then
+    elseif attacker:isPC() or attacker:isSquadMate() then -- (XI: Forever Offline) squad mates use the player caps
         if attacker:isUsingH2H() then -- Kicks aren't explicitly listed as 99%, TODO: needs verification
             return 0.99
         elseif attacker:isWeaponTwoHanded() or slot >= xi.attackAnimation.LEFT_ATTACK then -- 1h offhand, ranged
@@ -156,12 +156,15 @@ local function accuracyAndEvasionToHitRate(attacker, target, acc, eva)
             dlvl = utils.clamp(dlvl, 0, 38)
         end
 
+        -- (XI: Forever Offline) squad mates are corrected like player characters
+        local playerLike = attacker:isPC() or attacker:isSquadMate()
+
         -- Accuracy Bonus, doesn't apply to PCs
-        if not attacker:isPC() and attacker:getMainLvl() > target:getMainLvl() then
+        if not playerLike and attacker:getMainLvl() > target:getMainLvl() then
             acc = acc + dlvl * 4
 
         -- Accuracy Penalty, only applies to PCs -- TODO: does this apply to player pets?
-        elseif attacker:isPC() and attacker:getMainLvl() < target:getMainLvl() then
+        elseif playerLike and attacker:getMainLvl() < target:getMainLvl() then
             acc = acc + dlvl * 4
         end
     end

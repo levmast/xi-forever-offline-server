@@ -242,7 +242,9 @@ auto IsBlocked(CBattleEntity* PAttacker, CBattleEntity* PDefender) -> bool
  *  Check for damage multiplier, relic weapons etc.                      *
  *                                                                       *
  ************************************************************************/
-auto CheckForDamageMultiplier(CCharEntity* PChar, CItemWeapon* PWeapon, uint32 damage, PHYSICAL_ATTACK_TYPE attackType, uint8 weaponSlot, bool allowProc) -> uint32
+// (XI: Forever Offline, squad audit N6) takes any battle entity: it only reads the attacker's mods and the weapon's mods,
+// so a squad mate can use it with the item it wears (attack.cpp). Player callers are unchanged.
+auto CheckForDamageMultiplier(CBattleEntity* PChar, CItemWeapon* PWeapon, uint32 damage, PHYSICAL_ATTACK_TYPE attackType, uint8 weaponSlot, bool allowProc) -> uint32
 {
     if (PWeapon == nullptr)
     {

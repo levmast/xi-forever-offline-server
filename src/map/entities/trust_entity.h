@@ -26,6 +26,8 @@
 
 #include <common/types/flag.h>
 
+#include <array>
+
 class CCharEntity;
 class CMobSpellList;
 
@@ -65,6 +67,26 @@ public:
         return squadRace_;
     }
 
+    auto isSquadMate() const -> bool override
+    {
+        return squadId_ != 0;
+    }
+
+    // Squad mates: the item id worn in each equipment slot (0 = nothing), set from the squad outfit when the mate is
+    // called. Squad mates hold no inventory, so player combat code that reads the equipped item uses these.
+    void setSquadEquip(uint8 slot, uint16 itemId)
+    {
+        if (slot < squadEquip_.size())
+        {
+            squadEquip_[slot] = itemId;
+        }
+    }
+
+    auto squadEquip(uint8 slot) const -> uint16
+    {
+        return slot < squadEquip_.size() ? squadEquip_[slot] : 0;
+    }
+
     // Squad mates: the list of every spell this mate knows. The trust owns it and frees it when it goes.
     void setSquadSpellList(CMobSpellList* list)
     {
@@ -95,4 +117,6 @@ private:
     uint32         squadId_{};
     uint8          squadRace_{};
     CMobSpellList* squadSpellList_{};
+
+    std::array<uint16, 16> squadEquip_{};
 };

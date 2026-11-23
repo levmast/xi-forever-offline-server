@@ -148,6 +148,7 @@ public:
     auto isMob() const -> bool;
     auto isPet() const -> bool;
     auto isTrust() const -> bool;
+    auto isSquadMate() const -> bool; // XI: Forever Offline: a trust with a squad record
     auto isFellow() const -> bool;
     auto isAlly() const -> bool;
 

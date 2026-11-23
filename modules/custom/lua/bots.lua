@@ -969,7 +969,9 @@ think = function(bot, token)
             local hurt = bot:getHPP() < 70 or (bot:getMaxMP() > 0 and bot:getMPP() < 75)
             local full = bot:getHPP() >= 100 and (bot:getMaxMP() == 0 or bot:getMPP() >= 100)
             local leaderRests = xi.animation and leader:getAnimation() == xi.animation.HEALING
-            local wantRest = not camp and not full and (leaderRests or (hurt and os.time() - st.stillSince >= REST_STILL_S))
+            -- (2026-11-22, K-Andy: "when you sit down your group should also") when you /heal the bot sits with you even
+            -- at full HP and MP, and gets up when you do; on its own it still only sits when it is low
+            local wantRest = not camp and (leaderRests or (not full and hurt and os.time() - st.stillSince >= REST_STILL_S))
                 and bot:checkDistance(leader) < 10
             if wantRest and not st.resting then
                 st.resting = true
@@ -1001,11 +1003,12 @@ think = function(bot, token)
                     -- little low (the same as away from camp); a last step towards the spot no longer keeps them up
                     local restOn = not (xi.squad and xi.squad.campRestOn) or xi.squad.campRestOn(leader)
                     local low = bot:getHPP() < 80 or (bot:getMaxMP() > 0 and bot:getMPP() < 75)
-                    if restOn and (low or leaderRests) and not full and not st.resting then
+                    -- (2026-11-22, K-Andy) with you at camp too: full or not, it sits while you /heal
+                    if restOn and (leaderRests or (low and not full)) and not st.resting then
                         st.resting = true
                         BotStop(id)
                         BotHeal(id, true)
-                    elseif st.resting and full then
+                    elseif st.resting and full and not leaderRests then
                         st.resting = nil
                         BotHeal(id, false)
                     end
@@ -1030,7 +1033,10 @@ think = function(bot, token)
                 end
             end
 
-            if partyPlay and (not st.resting or emergency) then
+            -- (2026-11-22) a bot that sits only to keep you company (you /heal, it is full) still does its job: before it
+            -- sat with you it stood there and cured you, and it must not stop now. Once a cure has cost it MP it is no
+            -- longer full, so from then on it rests for itself and only an emergency gets it up.
+            if partyPlay and (not st.resting or emergency or (leaderRests and full)) then
                 partyPlay.act(bot, st, leader, nil)
             end
 
@@ -1593,6 +1599,14 @@ xi.bots.lsChat = function(player, text)
     if linkshells and not BotIsBot(player:getID()) then
         realPlayers[player:getID()] = true
         linkshells.onPlayerChat(player, text or '')
+    end
+
+    -- (2026-11-22) your squad mates on the linkshell hear it too (squad_shell.lua)
+    if not BotIsBot(player:getID()) and type(xi.squad) == 'table' and type(xi.squad.shell) == 'table' then
+        local okShell, err = pcall(xi.squad.shell.onPlayerChat, player, text or '')
+        if not okShell then
+            print('[squad] linkshell chat: ' .. tostring(err))
+        end
     end
 end
 

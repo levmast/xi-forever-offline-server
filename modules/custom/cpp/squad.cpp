@@ -20,7 +20,7 @@
 //   - DeleteSquadMate(charId, slot)
 //   - SetSquadEquip(squadId, job, slot, itemId)   (itemId 0 removes the item)
 //   - FindSquadItem(text)                         -> item id from a numeric id or an item name, 0 if not found
-//   - GetSquadItemInfo(itemId)                    -> { valid, name, level, jobs, slot, skill, shield } for equipment
+//   - GetSquadItemInfo(itemId)                    -> { valid, name, level, jobs, slot, skill, shield, dmg, delay, mods } for equipment
 //   - Trading: when a player trades items to one of their squad mates, the offered items are handed to the Lua function
 //              xi.squad.onTrade(player, trust, items), where items = array of { itemId, slot, quantity }.
 //   - BuildStarterGear(job)                       -> { [slot] = itemId } basic level 1 gear for that job
@@ -199,6 +199,13 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
 
         any = true;
 
+        // (squad audit N2) remember what is worn in each slot: player combat code that reads the equipped item (shield
+        // blocking, parry, guard) looks it up for a squad mate through this
+        if (slot >= 0 && slot < 16)
+        {
+            PTrust->setSquadEquip(static_cast<uint8>(slot), itemId);
+        }
+
         // Item modifiers (stats). Copy the list because addModifiers takes a non-const pointer.
         auto mods = item->modList;
         PTrust->addModifiers(&mods);
@@ -245,6 +252,8 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
             if (weapon != nullptr && target != nullptr && shoots)
             {
                 target->setSkillType(weapon->getSkillType());
+                // (squad audit N1) the player ranged formulas (RATT, RACC) skip a weapon without a damage type
+                target->setDmgType(const_cast<CItemWeapon*>(weapon)->getDmgType()); // (getDmgType isn't const)
                 if (weapon->getDamage() > 0)
                 {
                     target->setDamage(weapon->getDamage());
@@ -285,6 +294,10 @@ void applyEquipment(CTrustEntity* PTrust, const sol::table& equip)
         subWeapon->setDmgType(const_cast<CItemWeapon*>(subItem)->getDmgType());
         PTrust->m_dualWield = true;
     }
+
+    // (squad audit N1) "+skill" gear counts, as for a player: the skills are worked out again with the outfit's mods
+    // (and with the trait mods added after the first pass in trustutils)
+    trustutils::BuildSquadSkills(PTrust);
 
     if (!any)
     {
@@ -454,6 +467,16 @@ auto spawnSquadMate(CLuaBaseEntity* master, const sol::table& spec) -> std::opti
             if (auto* fists = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[SLOT_MAIN]))
             {
                 fists->setSkillType(xi::SkillType::HandToHand); // barehanded: hand-to-hand skill and weapon skills
+                // (2026-11-22, Altair: an unarmed squad Monk swung far too fast) the barehanded delay is a player's
+                // (xi::items::unarmedH2H, 480), not the trust template's stand-in delay (240). Martial Arts, the two
+                // fists per round and haste are still worked out in CBattleEntity::GetWeaponDelay.
+                const uint16 unarmedDelay = xi::items::unarmedH2H()->getBaseDelay();
+                fists->setDelay(unarmedDelay);
+                fists->setBaseDelay(unarmedDelay);
+                if (fists->getDelay() > 0)
+                {
+                    fists->setDPS(static_cast<double>(fists->getDamage()) / (static_cast<double>(fists->getDelay()) / 1000.0));
+                }
             }
         }
     }
@@ -490,6 +513,21 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
         weaponType = static_cast<uint8>(xi::SkillType::HandToHand);
     }
 
+    // (squad audit N1) a ranged weapon's weapon skills too, as for a player (Hot Shot, Sidewinder, Slug Shot...): the
+    // bow, gun or throwing weapon applyEquipment put in the ranged (or ammo) slot. Before this a squad Ranger or Corsair
+    // only ever had its main hand's weapon skills.
+    uint8 rangedType = 0;
+    for (const SLOTTYPE slot : { SLOT_RANGED, SLOT_AMMO })
+    {
+        const auto* shooter = dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[slot]);
+        const auto  type    = shooter != nullptr ? shooter->getSkillType() : xi::SkillType::None;
+        if (rangedType == 0 && (type == xi::SkillType::Archery || type == xi::SkillType::Marksmanship || type == xi::SkillType::Throwing) &&
+            (slot == SLOT_RANGED || type == xi::SkillType::Throwing))
+        {
+            rangedType = static_cast<uint8>(type);
+        }
+    }
+
     // Exactly the weapon skills a player of this job could use with this weapon right now: no Trust-only moves
     // (Peacebreaker and the like), none for another weapon, none above the skill level, none whose quest the player has not done.
     auto* owner = dynamic_cast<CCharEntity*>(PTrust->PMaster);
@@ -499,7 +537,14 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
     for (uint16 id = 1; id < MAX_WEAPONSKILL_ID; ++id)
     {
         auto* ws = battleutils::GetWeaponSkill(id);
-        if (ws == nullptr || weaponType == 0 || ws->getType() != weaponType || ws->getJob(job) == 0)
+        if (ws == nullptr || ws->getJob(job) == 0)
+        {
+            continue;
+        }
+
+        const bool meleeMatch  = weaponType != 0 && ws->getType() == weaponType;
+        const bool rangedMatch = rangedType != 0 && ws->getType() == rangedType;
+        if (!meleeMatch && !rangedMatch)
         {
             continue;
         }
@@ -635,7 +680,7 @@ void limitWeaponSkills(CTrustEntity* PTrust, const uint16 onlyWs)
         }
     }
 
-    ShowInfo("[SQUAD] %s: weapon skills like a player's (skill type %u): %s", PTrust->getName(), static_cast<unsigned>(weaponType), kept.empty() ? "none yet" : kept.c_str());
+    ShowInfo("[SQUAD] %s: weapon skills like a player's (skill type %u, ranged %u): %s", PTrust->getName(), static_cast<unsigned>(weaponType), static_cast<unsigned>(rangedType), kept.empty() ? "none yet" : kept.c_str());
 }
 
 // GetSquadWeaponSkills(mate) -> names of the weapon skills this called mate can use, like "Raging_Axe" (for the menu)
@@ -1089,12 +1134,28 @@ auto getSquadItemInfo(const uint32 itemId) -> sol::table
         info["shield"] = rset->get<uint8>("shieldSize");
     }
 
-    // (for the squad's auto-equip: two-handed weapons, grips and shields, ammo that fits the ranged weapon)
-    const auto rsetW = db::preparedStmt("SELECT skill FROM item_weapon WHERE itemId = ?", itemId);
+    // (for the squad's auto-equip: two-handed weapons, grips and shields, ammo that fits the ranged weapon;
+    //  2026-11-22, lilibun: damage and delay too, so a weapon can be rated for a job)
+    info["dmg"]   = 0;
+    info["delay"] = 0;
+    const auto rsetW = db::preparedStmt("SELECT skill, dmg, delay FROM item_weapon WHERE itemId = ?", itemId);
     FOR_DB_SINGLE_RESULT(rsetW)
     {
         info["skill"] = rsetW->get<uint8>("skill");
+        info["dmg"]   = rsetW->get<uint32>("dmg");
+        info["delay"] = rsetW->get<int32>("delay");
     }
+
+    // (2026-11-22, lilibun: "a Warrior equips a Silver Hairpin") what the piece adds: mods[modId] = value, for
+    // SQUAD_GEAR_SCORE.rate (modules/custom/late/squad_gear_score.lua). Lua's auto-equip keeps what it read.
+    auto       mods  = ::lua.create_table();
+    const auto rsetM = db::preparedStmt("SELECT modId, value FROM item_mods WHERE itemId = ?", itemId);
+    FOR_DB_MULTIPLE_RESULTS(rsetM)
+    {
+        mods[rsetM->get<uint16>("modId")] = rsetM->get<int16>("value");
+    }
+
+    info["mods"] = mods;
 
     return info;
 }
@@ -1396,7 +1457,13 @@ auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellI
         return SpellCastResult::Busy;
     }
 
-    return controller->Cast(PTarget->entityId(), spellId) ? SpellCastResult::Cast : SpellCastResult::Busy;
+    // (2026-11-22) an area spell that waits for its caster to step within reach of you is on its way: not "busy"
+    if (controller->Cast(PTarget->entityId(), spellId) || controller->IsSteppingIn())
+    {
+        return SpellCastResult::Cast;
+    }
+
+    return SpellCastResult::Busy;
 }
 
 void reportSpellResult(CCharEntity* PChar, CTrustEntity* PTrust, const std::string& spellName, const SpellCastResult result)
@@ -1609,7 +1676,8 @@ auto trySquadAbility(CCharEntity* PChar, CTrustEntity* PTrust, CAbility* PAbilit
         return SpellCastResult::NoTarget;
     }
 
-    if (PTrust->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(PAbility->getID()), std::chrono::seconds(0)))
+    // (squad audit N5) the ability's own recast and the player's shared recast group / charges
+    if (PTrust->IsAbilityOnRecast(PAbility))
     {
         return SpellCastResult::NotReady;
     }
@@ -2150,6 +2218,12 @@ class SquadModule : public CPPModule
     // (Gambits job expansion) this xi_map has MOD_LT, the magic burst timing, managed Sneak/Trick Attack, the weapon skill
     // hold and squad song recipients: the Lua side offers those only when this answers
     ::lua.set_function("SquadJobExpansionEngine", []() -> int32 { return 1; });
+    // (Gambits Bard song tiers) this xi_map's STATUS / NOT_STATUS read a song tier in the argument's high 16 bits
+    // (gambits_container.cpp HasStatusEffectTier): squad_rulesets.lua accepts { effect = NAME, tier = n } only then
+    ::lua.set_function("SquadStatusTierEngine", []() -> int32 { return 1; });
+    // (Gambits 0.3.3, Bard role targeting) role targets read include / exclude role bits from the target argument's high
+    // byte (gambits_container.cpp AddGambit): squad_rulesets.lua accepts a rule's include / exclude only then
+    ::lua.set_function("SquadRoleFilterEngine", []() -> int32 { return 1; });
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);

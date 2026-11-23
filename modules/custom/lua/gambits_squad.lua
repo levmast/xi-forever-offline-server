@@ -74,12 +74,18 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 8     -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
+local VERSION      = 10    -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
                            -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
                            -- 6 (job expansion): MOD_LT ("m", argument MODIFIER.number), TRIGGER_SELF_ACTION_TARGET, more
                            --   families, abilities and spells of content this server has not enabled are left out
                            -- 7 (party roles): prl, prs
-                           -- 8 (WotG, 2026-11-22): actions w (waltz), d (samba), e (storm), h (helix) for DNC/SCH
+                           -- 8 (Bard song tiers): STATUS / NOT_STATUS may carry "EFFECT.tier" (one song of a song type,
+                           --   { effect = 'MARCH', tier = 2 }); a plain "EFFECT" is any tier, as before. Saving such a
+                           --   rule needs the map server that reads tiers (squad_rulesets.lua R.tierReady).
+                           -- 9 (Bard role targeting): a role target may carry included / excluded roles in the TARGET field,
+                           --   "MELEE-TANK" (melee, not tanks), "TANK.CASTER" (tanks or mages); saving needs the map server
+                           --   that reads them (R.roleFilterReady). An older server refuses such a target as unknown.
+                           -- 10 (WotG, 2026-11-22): actions w (waltz), d (samba), e (storm), h (helix) for DNC/SCH
 local MAX_LINE     = 120
 local MAX_PARTS    = 16    -- w: parts that end on a rule boundary
 local MAX_CHUNKS   = 64    -- x: 32 rules of the most complex valid form (~140 bytes each) need about 49 chunks of 93 bytes
@@ -286,6 +292,47 @@ local function argValue(text)
     return text
 end
 
+-- (version 9, Bard role targeting) the TARGET field may carry role filters: "MELEE-TANK" = MELEE, exclude TANK;
+-- "TANK.CASTER" = TANK, include CASTER; "MELEE.RANGED-TANK-CASTER". -> target, include list or nil, exclude list or nil;
+-- nil for a malformed field (an empty part, a part that is not a name)
+function G.splitTarget(token)
+    local parts = splitPlain(token or '', '-')
+    local head = splitPlain(parts[1], '.')
+    for _, list in ipairs({ head, parts }) do
+        for i, name in ipairs(list) do
+            if (list ~= parts or i > 1) and not string.match(name, '^[A-Z][A-Z_]*$') then
+                return nil
+            end
+        end
+    end
+
+    local include, exclude = nil, nil
+    for i = 2, #head do
+        include = include or {}
+        include[#include + 1] = head[i]
+    end
+
+    for i = 2, #parts do
+        exclude = exclude or {}
+        exclude[#exclude + 1] = parts[i]
+    end
+
+    return head[1], include, exclude
+end
+
+function G.joinTarget(target, include, exclude)
+    local text = tostring(target)
+    for _, role in ipairs(include or {}) do
+        text = text .. '.' .. tostring(role)
+    end
+
+    for _, role in ipairs(exclude or {}) do
+        text = text .. '-' .. tostring(role)
+    end
+
+    return text
+end
+
 -- "1,PARTY,HPP_LT,50,,,f,CURE,[,LEVEL[,ID]]" -> a M1.1 rule table, or nil + why
 function G.decodeRule(text, index)
     local f = splitPlain(text, ',')
@@ -318,8 +365,13 @@ function G.decodeRule(text, index)
         return nil, 'rule ' .. index .. ': ' .. kind .. ' takes no name'
     end
 
-    local rule = { id = 'r' .. index, on = f[1] == '1', target = f[2], cond = { f[3], argValue(f[4]) },
-                   action = NAMED[kind] and { kind, f[8] } or { kind } }
+    local target, include, exclude = G.splitTarget(f[2])
+    if target == nil then
+        return nil, 'rule ' .. index .. ': the target must be TARGET, TARGET.ROLE or TARGET-ROLE'
+    end
+
+    local rule = { id = 'r' .. index, on = f[1] == '1', target = target, include = include, exclude = exclude,
+                   cond = { f[3], argValue(f[4]) }, action = NAMED[kind] and { kind, f[8] } or { kind } }
     if f[10] ~= nil and f[10] ~= '' then
         rule.level = tonumber(f[10])
         if rule.level == nil then
@@ -342,10 +394,18 @@ function G.decodeRule(text, index)
     end
 
     -- (version 6, job expansion) MOD_LT carries "MODIFIER.number" ({ mod = 'UTSUSEMI', below = 2 })
+    -- (version 8, Bard song tiers) STATUS / NOT_STATUS carry "EFFECT.tier" ({ effect = 'MARCH', tier = 2 })
     for _, c in ipairs({ rule.cond, rule.cond2 }) do
         if c and c[1] == 'MOD_LT' and type(c[2]) == 'string' then
             local mod, below = string.match(c[2], '^([A-Z][A-Z0-9_]*)%.(%d+)$')
             c[2] = mod and { mod = mod, below = tonumber(below) } or c[2]
+        elseif c and (c[1] == 'STATUS' or c[1] == 'NOT_STATUS') and type(c[2]) == 'string' and string.find(c[2], '.', 1, true) then
+            local effect, tier = string.match(c[2], '^([A-Z][A-Z0-9_]*)%.(%d+)$')
+            if effect == nil then
+                return nil, 'rule ' .. index .. ': a song tier must be EFFECT.number'
+            end
+
+            c[2] = { effect = effect, tier = tonumber(tier) }
         end
     end
 
@@ -362,7 +422,8 @@ end
 -- a M1.1 rule table -> "1,PARTY,HPP_LT,50,,,f,CURE,[,LEVEL[,ID]]", or nil when it has anything the wire cannot carry
 -- exactly (a table argument, a field this version does not know, a fraction, an odd value): the addon then shows the
 -- rule as "?" and keeps it read-only, so nothing is ever lost by an edit.
-local RULE_KEYS = { id = true, on = true, target = true, cond = true, cond2 = true, action = true, retry = true, level = true }
+local RULE_KEYS = { id = true, on = true, target = true, cond = true, cond2 = true, action = true, retry = true, level = true,
+                    include = true, exclude = true } -- (version 9: role filters)
 function G.encodeRule(rule, index)
     if type(rule) ~= 'table' or type(rule.action) ~= 'table' or type(rule.cond) ~= 'table' then
         return nil
@@ -403,6 +464,15 @@ function G.encodeRule(rule, index)
             end
 
             return string.format('%s.%d', v.mod, v.below)
+        elseif type(v) == 'table' and word(v.effect) and whole(v.tier) and v.tier >= 1 then
+            -- (version 8) { effect = 'MARCH', tier = 2 } -> "MARCH.2" (STATUS / NOT_STATUS); any other key: not carried
+            for key in pairs(v) do
+                if key ~= 'effect' and key ~= 'tier' then
+                    return nil
+                end
+            end
+
+            return string.format('%s.%d', v.effect, v.tier)
         end
 
         return nil
@@ -431,7 +501,24 @@ function G.encodeRule(rule, index)
         id = rule.id
     end
 
-    local fields = { rule.on == false and '0' or '1', rule.target, c1[1], a1, c2 and c2[1] or '', a2, kind, name or '', retry }
+    -- (version 9) include / exclude: plain lists of role names, carried in the TARGET field ("MELEE-TANK")
+    for _, key in ipairs({ 'include', 'exclude' }) do
+        local list = rule[key]
+        if list ~= nil then
+            if type(list) ~= 'table' or #list == 0 then
+                return nil
+            end
+
+            for k, role in pairs(list) do
+                if type(k) ~= 'number' or k < 1 or k > #list or not (type(role) == 'string' and string.match(role, '^[A-Z][A-Z_]*$')) then
+                    return nil
+                end
+            end
+        end
+    end
+
+    local fields = { rule.on == false and '0' or '1', G.joinTarget(rule.target, rule.include, rule.exclude), c1[1], a1,
+                     c2 and c2[1] or '', a2, kind, name or '', retry }
     if level ~= '' or id ~= '' then
         fields[#fields + 1] = level
     end

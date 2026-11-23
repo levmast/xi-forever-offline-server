@@ -21,6 +21,8 @@
 
 #include "trust_controller.h"
 
+#include "ability.h"
+#include "common/earth_time.h"
 #include "ai/helpers/gambits_container.h"
 #include "ai/states/magic_state.h"
 #include "ai/states/range_state.h"
@@ -188,6 +190,7 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
 
     position_t camp{};
     const bool inCamp = campOf(PTrust, camp);
+    CBattleEntity* POrdered = nullptr; // (!squad attack) the monster the player sent the squad at, while he is not engaged
     if (inCamp)
     {
         // camp: the fight at camp goes on without you; anything that wanders off is let go
@@ -199,8 +202,18 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
     }
     else if (!PMaster->PAI->IsEngaged())
     {
-        PTrust->PAI->Internal_Disengage();
-        m_CombatEndTime = m_Tick;
+        // (!squad attack, 2026-11-22) the player sent the squad at a monster and keeps out of the fight himself:
+        // stay on that monster. Without such an order a mate lets go when its master is not fighting, as before.
+        POrdered = OrderedTarget();
+        if (POrdered == nullptr)
+        {
+            PTrust->PAI->Internal_Disengage();
+            m_CombatEndTime = m_Tick;
+        }
+        else if (PTarget != POrdered)
+        {
+            PTrust->PAI->Internal_ChangeTarget(EntityId(POrdered));
+        }
     }
 
     if (inCamp && PMob && distance(PMob->loc.p, camp) > CampFightRadius)
@@ -239,6 +252,14 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
         co_return;
     }
 
+    // FFXI Offline squad: an area spell is waiting for this mate to step within reach of the player. The rules keep
+    // running meanwhile, so a cure is not held up by it.
+    if (StepInTick())
+    {
+        co_await m_GambitsContainer->Tick(tick);
+        co_return;
+    }
+
     if (PTarget)
     {
         if (PTrust->PAI->CanFollowPath() && PTrust->GetSpeed() > 0)
@@ -246,7 +267,7 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
             float currentDistanceToTarget = distance(PTrust->loc.p, PTarget->loc.p);
             float currentDistanceToMaster = distance(PTrust->loc.p, PMaster->loc.p);
 
-            if (!inCamp && !PMaster->PAI->IsEngaged() && currentDistanceToTarget > WarpDistance)
+            if (!inCamp && !PMaster->PAI->IsEngaged() && POrdered == nullptr && currentDistanceToTarget > WarpDistance)
             {
                 PTrust->PAI->PathFind->WarpToOnMesh(PTarget->loc.p);
             }
@@ -465,6 +486,12 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
 
     auto*      PMaster              = static_cast<CCharEntity*>(POwner->PMaster);
 
+    // FFXI Offline squad: an area spell is waiting for this mate to step within reach of the player
+    if (StepInTick())
+    {
+        co_return;
+    }
+
     position_t camp{};
     if (campOf(POwner, camp))
     {
@@ -476,6 +503,15 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             if (PTarget && !PTarget->isDead() && distance(PTarget->loc.p, camp) <= CampFightRadius)
             {
                 PFight = PTarget;
+            }
+        }
+
+        if (PFight == nullptr && !PMaster->PAI->IsEngaged())
+        {
+            // (!squad attack at a camp) a monster the player pointed out, if it is within the camp's reach
+            if (auto* POrdered = OrderedTarget(); POrdered != nullptr && distance(POrdered->loc.p, camp) <= CampFightRadius)
+            {
+                PFight = POrdered;
             }
         }
 
@@ -526,6 +562,15 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             break;
         }
         case 0: // Nothing set
+            // (XI: Forever Offline, 2026-11-22, the user: "when you press attack it will send your squad to attack even
+            // if you don't hit them, so mages can do this apart") for squad mates nothing set means "as soon as you
+            // engage". The retail rule below is !squad engage normal, which sets 2.
+            if (POwner->GetLocalVar("SQUAD_ID") != 0)
+            {
+                trustEngageCondition = PMaster->GetBattleTarget();
+                break;
+            }
+
             [[fallthrough]];
         default: // Something invalid set
         {
@@ -552,22 +597,35 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
             POwner->PAI->Internal_Engage(PMaster->battleTarget());
         }
     }
+    else if (auto* POrdered = PMaster->PAI->IsEngaged() ? nullptr : OrderedTarget(); POrdered != nullptr && POwner->GetModelId() != modelID_Cornelia)
+    {
+        // (!squad attack, 2026-11-22, Hasuko: "I'm a WHM. I shouldn't have to pull my weapon") the player pointed at a
+        // monster and stays out of the fight: go in without him. A mate's engage delay (!squad delay) counts from the order.
+        if (EngageDelayPassed(POrdered))
+        {
+            POwner->PAI->Internal_Engage(EntityId(POrdered));
+        }
+    }
     else if (!PMaster->PAI->IsEngaged() || PMasterTarget == nullptr)
     {
         m_EngageWaitTarget = 0;
     }
 
     const uint8          currentPartyPos = GetPartyPosition();
-    const CBattleEntity* PFollowTarget   = (GetPartyPosition() > 0) ? static_cast<CBattleEntity*>(PMaster->PTrusts.at(currentPartyPos - 1)) : POwner->PMaster;
+    // FFXI Offline squad (2026-11-22): a mate about to cast an area spell asked the squad to close up (the player's local
+    // var SQUAD_GATHER holds the time until which). Everyone then comes to the player himself, not to the mate in front,
+    // each a little further out than the one before, and goes back to the usual line afterwards.
+    const bool           gather          = POwner->GetLocalVar("SQUAD_ID") != 0 && PMaster->GetLocalVar("SQUAD_GATHER") > earth_time::timestamp();
+    const CBattleEntity* PFollowTarget   = (currentPartyPos > 0 && !gather) ? static_cast<CBattleEntity*>(PMaster->PTrusts.at(currentPartyPos - 1)) : POwner->PMaster;
     const float          currentDistance = distance(POwner->loc.p, PFollowTarget->loc.p);
 
     // Formation following thresholds (in yalms)
     // First trust follows master more closely than other trusts follow each other
-    const bool isFirstTrust = (currentPartyPos == 0);
+    const bool isFirstTrust = (currentPartyPos == 0) || gather;
 
     // FFXI Offline squad: !squad follow close | normal | far (char var SQUAD_FOLLOW 1 / 0 / 2) for squad mates
     const int32 followStyle = POwner->GetLocalVar("SQUAD_ID") != 0 ? charutils::GetCharVar(PMaster, "SQUAD_FOLLOW") : 0;
-    const float followScale = followStyle == 1 ? 0.7f : (followStyle == 2 ? 1.8f : 1.0f);
+    const float followScale = gather ? 1.0f + 0.35f * static_cast<float>(currentPartyPos) : (followStyle == 1 ? 0.7f : (followStyle == 2 ? 1.8f : 1.0f));
 
     const float declumpDistance = (isFirstTrust ? 1.0f : 1.5f) * std::min(followScale, 1.0f); // Too close, need to move away
     const float followMax       = (isFirstTrust ? 2.0f : 3.5f) * followScale;                 // Maximum follow distance before moving closer
@@ -644,6 +702,44 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
     }
 
     co_return;
+}
+
+// FFXI Offline squad (2026-11-22, Hasuko: "I'm a WHM. I shouldn't have to pull my weapon"): !squad attack sends the
+// squad at the player's target without the player engaging. squad.lua writes the monster's targid, the zone and the
+// time into the player's local vars SQUAD_ATTACK_TARGET / SQUAD_ATTACK_ZONE / SQUAD_ATTACK_SEEN. This returns that
+// monster while the order stands, and drops the order when the monster is dead or gone, the player is dead or in
+// another zone, the monster is farther than OrderLeash from the player, or no mate has looked at the order for
+// OrderStaleSec (nobody was out: the same monster must not be attacked again after it comes back).
+constexpr float  OrderLeash    = 60.0f;
+constexpr uint32 OrderStaleSec = 15;
+
+auto CTrustController::OrderedTarget() -> CBattleEntity*
+{
+    auto* PMaster = static_cast<CBattleEntity*>(POwner->PMaster);
+    if (PMaster == nullptr || POwner->GetLocalVar("SQUAD_ID") == 0)
+    {
+        return nullptr;
+    }
+
+    const uint32 targid = PMaster->GetLocalVar("SQUAD_ATTACK_TARGET");
+    if (targid == 0)
+    {
+        return nullptr;
+    }
+
+    const uint32 now  = earth_time::timestamp();
+    const uint32 seen = PMaster->GetLocalVar("SQUAD_ATTACK_SEEN");
+    auto*        PMob = dynamic_cast<CMobEntity*>(POwner->GetEntity(static_cast<uint16>(targid), TYPE_MOB));
+    if (PMob == nullptr || PMob->isDead() || PMob->status == xi::Status::Disappear || PMob->allegiance != xi::Allegiance::Mob ||
+        PMaster->isDead() || PMaster->GetLocalVar("SQUAD_ATTACK_ZONE") != static_cast<uint32>(static_cast<uint16>(PMaster->getZone())) ||
+        now > seen + OrderStaleSec || distance(PMob->loc.p, PMaster->loc.p) > OrderLeash)
+    {
+        PMaster->SetLocalVar("SQUAD_ATTACK_TARGET", 0);
+        return nullptr;
+    }
+
+    PMaster->SetLocalVar("SQUAD_ATTACK_SEEN", now);
+    return PMob;
 }
 
 // camp: stand on its own spot around the camp (one per party slot)
@@ -1001,7 +1097,9 @@ auto CTrustController::Ability(const EntityId target, uint16 abilityid) -> bool
 {
     TracyZoneScoped;
 
-    if (POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(abilityid), 0s))
+    // (XI: Forever Offline, squad audit N5) the ability-id recast, and for a squad mate a player's shared recast and charges
+    auto* PAbility = ability::GetAbility(abilityid);
+    if (PAbility != nullptr ? POwner->IsAbilityOnRecast(PAbility) : POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(abilityid), 0s))
     {
         return false;
     }
@@ -1114,7 +1212,165 @@ auto CTrustController::Cast(const EntityId target, SpellID spellid) -> bool
         return false;
     }
 
+    // (XI: Forever Offline, 2026-11-22, Hexblood: "the AoE buffs miss me"; the user: "can we have the caster step in
+    // range, and if any mates are out of range they do as well") A spell that helps everyone around its caster
+    // (Protectra, Shellra, the Bar spells) is held back while the player is out of its reach, or out of a fight any
+    // squad mate near him. The caster walks in first (StepInTick, from the roam and combat ticks), the squad closes
+    // up around the player (SQUAD_GATHER, read in DoRoamTick), and then it is cast. After a few seconds it is cast
+    // from where she stands, so a mate that cannot get there still casts.
+    if (!m_StepInCasting)
+    {
+        if (const float radius = StepInRadius(PSpell, PTarget); radius > 0.0f)
+        {
+            auto*      PMaster  = static_cast<CCharEntity*>(POwner->PMaster);
+            const bool fighting = PMaster->PAI->IsEngaged();
+            const bool waiting  = m_StepInSpell == spellid;
+            if (AreaSpellCovers(radius) || (waiting && m_Tick - m_StepInSince > (fighting ? 4s : 7s)))
+            {
+                m_StepInSpell = SpellID::None;
+            }
+            else
+            {
+                if (!waiting)
+                {
+                    m_StepInSpell = spellid;
+                    m_StepInSince = m_Tick;
+                }
+
+                if (!fighting)
+                {
+                    PMaster->SetLocalVar("SQUAD_GATHER", earth_time::timestamp() + 5);
+                }
+
+                return false;
+            }
+        }
+        else if (m_StepInSpell == spellid)
+        {
+            m_StepInSpell = SpellID::None;
+        }
+    }
+
     return CMobController::Cast(castTarget, spellid);
+}
+
+// FFXI Offline squad: the reach of an area spell that is held back until its caster is near the player, or 0 when the
+// spell is not one of those: not a squad mate, not an area spell cast on oneself, a song (the Bard has her own walk), a
+// mate holding a camp (it does not leave its spot), or the player down or far away.
+auto CTrustController::StepInRadius(const CSpell* PSpell, const CBattleEntity* PTarget) const -> float
+{
+    if (PSpell == nullptr || PTarget != POwner || POwner->PMaster == nullptr || POwner->GetLocalVar("SQUAD_ID") == 0)
+    {
+        return 0.0f;
+    }
+
+    if (PSpell->getAOE() != SPELLAOE_RADIAL || PSpell->getSpellGroup() == SPELLGROUP_SONG || PSpell->getRadius() < 5.0f ||
+        (PSpell->getValidTarget() & TARGET_ENEMY) != 0)
+    {
+        return 0.0f;
+    }
+
+    position_t camp{};
+    if (campOf(POwner, camp))
+    {
+        return 0.0f;
+    }
+
+    auto* PMaster = POwner->PMaster;
+    if (PMaster->isDead() || PMaster->getZone() != POwner->getZone() || distance(POwner->loc.p, PMaster->loc.p) > 40.0f)
+    {
+        return 0.0f;
+    }
+
+    return PSpell->getRadius();
+}
+
+// true when everyone the spell is for stands inside it: the player, and out of a fight the squad mates around him
+auto CTrustController::AreaSpellCovers(const float radius) const -> bool
+{
+    auto* PMaster = static_cast<CCharEntity*>(POwner->PMaster);
+    if (distance(POwner->loc.p, PMaster->loc.p) > radius - 1.5f)
+    {
+        return false;
+    }
+
+    if (PMaster->PAI->IsEngaged())
+    {
+        return true; // in a fight nobody is called off the monster for it
+    }
+
+    for (auto* POther : PMaster->PTrusts)
+    {
+        if (POther == nullptr || POther == POwner || POther->isDead() || POther->GetLocalVar("SQUAD_ID") == 0 ||
+            POther->GetLocalVar("SQUAD_PULL_PHASE") != 0 || POther->PAI->IsEngaged() || distance(POther->loc.p, PMaster->loc.p) > 25.0f)
+        {
+            continue; // (out pulling, fighting, or left behind: not waited for)
+        }
+
+        if (distance(POwner->loc.p, POther->loc.p) > radius - 1.0f)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Called at the top of the roam and combat ticks. true = an area spell is waiting and this tick walked towards the
+// player (or cast it). Out of a fight the caster comes right up to the player, so the squad closing up around him is
+// covered; in a fight only as near as the spell needs, to stay as far from the monster as she can.
+auto CTrustController::StepInTick() -> bool
+{
+    if (m_StepInSpell == SpellID::None)
+    {
+        return false;
+    }
+
+    const SpellID spellid = m_StepInSpell;
+    const float   radius  = StepInRadius(spell::GetSpell(spellid), POwner);
+    if (radius <= 0.0f || POwner->isDead())
+    {
+        m_StepInSpell = SpellID::None;
+        return false;
+    }
+
+    auto*      PMaster  = static_cast<CCharEntity*>(POwner->PMaster);
+    const bool fighting = PMaster->PAI->IsEngaged();
+    if (AreaSpellCovers(radius) || m_Tick - m_StepInSince > (fighting ? 4s : 7s))
+    {
+        m_StepInSpell = SpellID::None;
+        POwner->PAI->PathFind->Clear();
+        m_StepInCasting = true;
+        Cast(EntityId(POwner), spellid);
+        m_StepInCasting = false;
+        return true;
+    }
+
+    if (!fighting)
+    {
+        PMaster->SetLocalVar("SQUAD_GATHER", earth_time::timestamp() + 4);
+    }
+
+    const float want = fighting ? radius - 3.0f : 2.5f;
+    if (distance(POwner->loc.p, PMaster->loc.p) > want + 1.0f)
+    {
+        if (!POwner->PAI->PathFind->IsFollowingPath() && !POwner->PAI->PathFind->PathAround(PMaster->loc.p, want, PATHFLAG_RUN) &&
+            POwner->GetSpeed() > 0)
+        {
+            POwner->PAI->PathFind->StepToOnMesh(PMaster->loc.p, true);
+        }
+
+        if (POwner->PAI->PathFind->IsFollowingPath())
+        {
+            POwner->PAI->PathFind->FollowPath(m_Tick);
+        }
+    }
+    else if (POwner->PAI->PathFind->IsFollowingPath())
+    {
+        POwner->PAI->PathFind->Clear(); // there: stand and let the others close up
+    }
+
+    return true;
 }
 
 auto CTrustController::GetTopEnmity() const -> CBattleEntity*

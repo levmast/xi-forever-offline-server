@@ -32,7 +32,7 @@ namespace attackutils
 {
 
 auto getHitCount(uint8 hits) -> uint8; // The multihit calculator.
-auto CheckForDamageMultiplier(CCharEntity* PChar, CItemWeapon* PWeapon, uint32 damage, PHYSICAL_ATTACK_TYPE attackType, uint8 weapnSlot, bool allowProc = false) -> uint32;
+auto CheckForDamageMultiplier(CBattleEntity* PChar, CItemWeapon* PWeapon, uint32 damage, PHYSICAL_ATTACK_TYPE attackType, uint8 weapnSlot, bool allowProc = false) -> uint32;
 
 auto IsParried(CBattleEntity* PAttacker, CBattleEntity* PDefender) -> bool; // Is the attack parried.
 auto IsGuarded(CBattleEntity* PAttacker, CBattleEntity* PDefender) -> bool; // Is the attack guarded.

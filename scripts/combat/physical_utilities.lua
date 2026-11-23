@@ -796,9 +796,12 @@ xi.combat.physical.calculateMeleePDIF = function(actor, target, weaponType, wsAt
         levelDifFactor = utils.clamp(actor:getMainLvl() - target:getMainLvl(), -38, 38) * 3 / 64 -- 3/64 from JP model which fits better
     end
 
+    -- (XI: Forever Offline) squad mates follow the player rules: level correction and the weapon-type caps
+    local playerLike = actor:isPC() or actor:isSquadMate()
+
     -- Only players suffer from negative level difference.
     if
-        not actor:isPC() and
+        not playerLike and
         levelDifFactor < 0
     then
         levelDifFactor = 0
@@ -806,7 +809,7 @@ xi.combat.physical.calculateMeleePDIF = function(actor, target, weaponType, wsAt
 
     -- Players do not get positive level correction, only monsters
     if
-        actor:isPC() and
+        playerLike and
         levelDifFactor > 0
     then
         levelDifFactor = 0
@@ -822,7 +825,7 @@ xi.combat.physical.calculateMeleePDIF = function(actor, target, weaponType, wsAt
     local damageLimitPercent = 1 + actor:getMod(xi.mod.DAMAGE_LIMITP) / 100
     local pDifFinalCap       = 0
 
-    if actor:isPC() then
+    if playerLike then
         pDifFinalCap = (xi.combat.physical.pDifWeaponCapTable[weaponType] + damageLimitPlus) * damageLimitPercent + (isCritical and 1 or 0) + levelDifFactor
 
         local sRatio = getSpikeRatio(true, wRatio)
@@ -966,8 +969,11 @@ xi.combat.physical.calculateRangedPDIF = function(actor, target, weaponType, wsA
     ----------------------------------------
     local levelDifFactor = 0
 
+    -- (XI: Forever Offline) squad mates follow the player rules: level correction and the weapon-type caps
+    local playerLike = actor:isPC() or actor:isSquadMate()
+
     -- Mod-based bypass for ranged level correction
-    if actor:isPC() and actor:getMod(xi.mod.RA_IGNORE_LVL_DIFF) > 0 then
+    if playerLike and actor:getMod(xi.mod.RA_IGNORE_LVL_DIFF) > 0 then
         applyLevelCorrection = false
     end
 
@@ -983,7 +989,7 @@ xi.combat.physical.calculateRangedPDIF = function(actor, target, weaponType, wsA
 
     -- Only players suffer from negative level difference.
     if
-        not actor:isPC() and
+        not playerLike and
         levelDifFactor < 0
     then
         levelDifFactor = 0
@@ -991,7 +997,7 @@ xi.combat.physical.calculateRangedPDIF = function(actor, target, weaponType, wsA
 
     -- Players do not get positive level correction, only monsters
     if
-        actor:isPC() and
+        playerLike and
         levelDifFactor > 0
     then
         levelDifFactor = 0
@@ -1010,7 +1016,7 @@ xi.combat.physical.calculateRangedPDIF = function(actor, target, weaponType, wsA
     local damageLimitPercent = 1 + actor:getMod(xi.mod.DAMAGE_LIMITP) / 100
     local pDifFinalCap       = 0
 
-    if actor:isPC() then
+    if playerLike then
         pDifFinalCap = (xi.combat.physical.pDifWeaponCapTable[weaponType] + damageLimitPlus) * damageLimitPercent + levelDifFactor -- Added damage limit bonuses
     else
         -- 4.0 is guessed. there is some indication that mob pdif can go to 8.0 in ilvl content
@@ -1252,7 +1258,9 @@ xi.combat.physical.canParry = function(defender, attacker)
         defender:isEngaged() and
         not defender:hasPreventActionEffect(true) -- Not stunned, slept, etc, but can parry when charmed
     then
-        if defender:isPC() then
+        -- (XI: Forever Offline) squad mates parry as players do: a Parry skill rank and a non hand-to-hand weapon.
+        -- getSkillRank and getEquippedItem answer for squad mates from their job and outfit.
+        if defender:isPC() or defender:isSquadMate() then
             if defender:getSkillRank(xi.skill.PARRY) == 0 then
                 return false
             end
@@ -1277,13 +1285,15 @@ xi.combat.physical.calculateParryRate = function(defender, attacker)
     local attackerSkill = 0
     local defenderSkill = 0
 
-    if defender:isPC() then
+    -- (XI: Forever Offline) a squad mate's own skill, exactly as a player's (its skill table is built like a
+    -- player's, gear skill mods included: trustutils BuildSquadSkills)
+    if defender:isPC() or defender:isSquadMate() then
         defenderSkill = defender:getSkillLevel(xi.skill.PARRY) + defender:getMod(xi.mod.PARRY) + defender:getILvlParry()
     else
         defenderSkill = xi.data.skillLevel.getSkillCap(defender:getMainLvl(), xi.skillRank.A_PLUS)
     end
 
-    if attacker:isPC() then
+    if attacker:isPC() or attacker:isSquadMate() then
         attackerSkill = attacker:getSkillLevel(attacker:getWeaponSkillType(xi.slot.MAIN)) + attacker:getILvlSkill()
     else
         attackerSkill = xi.data.skillLevel.getSkillCap(attacker:getMainLvl(), xi.skillRank.A_PLUS)
@@ -1328,9 +1338,15 @@ xi.combat.physical.canGuard = function(defender, attacker)
         defender:isFacing(attacker) and
         defender:isEngaged()
     then
-        if defender:isPC() and defender:getSkillRank(xi.skill.GUARD) > 0 then
+        -- (XI: Forever Offline) squad mates guard as players do: a Guard skill rank, bare hands or a hand-to-hand weapon
+        if
+            (defender:isPC() or defender:isSquadMate()) and
+            defender:getSkillRank(xi.skill.GUARD) > 0
+        then
             local mainWeapon = defender:getEquippedItem(xi.slot.MAIN)
             canGuard = (not mainWeapon) or mainWeapon:getSkillType() == xi.skill.HAND_TO_HAND
+        elseif defender:isSquadMate() then
+            canGuard = false -- no Guard rank (as a player)
         elseif
             defender:isMob() or
             defender:isPet() or
@@ -1348,13 +1364,13 @@ xi.combat.physical.calculateGuardRate = function(defender, attacker)
     local attackerSkill = 0
     local defenderSkill = 0
 
-    if defender:isPC() then
+    if defender:isPC() or defender:isSquadMate() then -- (XI: Forever Offline) squad mates: own skill, as players
         defenderSkill = defender:getSkillLevel(xi.skill.GUARD) + defender:getMod(xi.mod.GUARD) + defender:getILvlParry() -- getILvlParry also gets guard (h2h cannot have parry on the weapon)
     else
         defenderSkill = xi.data.skillLevel.getSkillCap(defender:getMainLvl(), xi.skillRank.A_PLUS)
     end
 
-    if attacker:isPC() then
+    if attacker:isPC() or attacker:isSquadMate() then
         attackerSkill = attacker:getSkillLevel(attacker:getWeaponSkillType(xi.slot.MAIN)) + attacker:getILvlSkill()
     else
         attackerSkill = xi.data.skillLevel.getSkillCap(attacker:getMainLvl(), xi.skillRank.A_PLUS)
@@ -1385,11 +1401,17 @@ xi.combat.physical.canBlock = function(defender, attacker)
         defender:isFacing(attacker) and
         not defender:hasPreventActionEffect(true)
     then
-        if defender:isPC() and defender:getSkillRank(xi.skill.SHIELD) > 0 then
+        -- (XI: Forever Offline) squad mates block as players do: a Shield skill rank and a shield in the sub slot
+        if
+            (defender:isPC() or defender:isSquadMate()) and
+            defender:getSkillRank(xi.skill.SHIELD) > 0
+        then
             local shield = defender:getEquippedItem(xi.slot.SUB)
             if shield then
                 canBlock = shield:isShield()
             end
+        elseif defender:isSquadMate() then
+            canBlock = false -- no Shield rank (as a player)
         elseif
             defender:isMob() or
             defender:isPet() or
@@ -1417,8 +1439,9 @@ xi.combat.physical.calculateBlockRate = function(defender, attacker)
 
     local attackSkill = attacker:getSkillLevel(attackerSkillType)
     local blockSkill = defender:getSkillLevel(xi.skill.SHIELD)
+    local playerLike = defender:isPC() or defender:isSquadMate() -- (XI: Forever Offline) squad mates: shield size table
 
-    if defender:isPC() then
+    if playerLike then
         local shield = defender:getEquippedItem(xi.slot.SUB)
         -- already checked in canBlock but check again here to make sure
         if shield and shield:isShield() then
@@ -1450,7 +1473,7 @@ xi.combat.physical.calculateBlockRate = function(defender, attacker)
         end
     end
 
-    if defender:isPC() then
+    if playerLike then
         -- get blockrate from table and use default value of 0
         blockRate = shieldSizeToBlockRateTable[shieldSize] or 0
     end
@@ -1487,8 +1510,10 @@ xi.combat.physical.getDamageReductionForBlock = function(defender, attacker, dam
         -- shield def bonus is a flat raw damage reduction that occurs before absorb
         damage = math.max(0, damage - defender:getMod(xi.mod.SHIELD_DEF_BONUS))
 
-        if defender:isPC() then
-            local shield = defender:getEquippedItem(xi.slot.SUB)
+        local shield = (defender:isPC() or defender:isSquadMate()) and defender:getEquippedItem(xi.slot.SUB) or nil
+
+        -- (XI: Forever Offline) a squad mate's shield absorbs as a player's does
+        if shield ~= nil then
             local absorb = utils.clamp(100 - shield:getShieldAbsorptionRate(), 0, 100)
             damage = math.floor(damage * (absorb / 100))
         else

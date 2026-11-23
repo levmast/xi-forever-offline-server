@@ -130,9 +130,16 @@ xi.spells.enhancing.calculateSongPower = function(caster, target, spell, spellId
     local divisor     = pTable[spellId][column.DIVISOR]
     local singingLvl  = caster:getSkillLevel(xi.skill.SINGING)
 
-    if caster:isPC() then
+    if caster:isPC() or caster:isSquadMate() then
         -- Add ranged skill level ONLY if it's an instrument.
-        local rangeType    = caster:getWeaponSkillType(xi.slot.RANGED)
+        -- (XI: Forever Offline) a squad mate's instrument is read from its outfit: its ranged stand-in weapon carries no
+        -- instrument skill on purpose (squad.cpp), so the bard does not shoot with it
+        local rangeType = caster:getWeaponSkillType(xi.slot.RANGED)
+        if caster:isSquadMate() then
+            local rangedItem = caster:getEquippedItem(xi.slot.RANGED)
+            rangeType = rangedItem and rangedItem:getSkillType() or xi.skill.NONE
+        end
+
         local isInstrument = rangeType == xi.skill.WIND_INSTRUMENT or rangeType == xi.skill.STRING_INSTRUMENT
 
         singingLvl = isInstrument and singingLvl + caster:getSkillLevel(rangeType) or singingLvl

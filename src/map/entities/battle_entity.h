@@ -39,6 +39,7 @@
 #include "data/enums/ecosystem.h"
 #include "data/enums/immunity.h"
 #include "data/enums/job.h"
+#include "data/enums/recast.h"
 #include "data/enums/skill_type.h"
 #include "data/enums/skillchain_type.h"
 #include "party.h"
@@ -132,6 +133,7 @@ class CPetEntity;
 class CSpell;
 class CItemEquipment;
 class CAbilityState;
+class CAbility;
 class CAttackState;
 class CMobSkillState;
 class CWeaponSkillState;
@@ -164,6 +166,20 @@ public:
     auto EVA() -> uint16;
     auto RATT(uint16 bonusAtt = 0) -> uint16;
     auto RACC(uint16 bonusAcc = 0) -> uint16;
+
+    // XI: Forever Offline: a squad mate is a trust with a squad record (modules/custom/cpp/squad.cpp). Squad mates
+    // use the player character formulas for combat ratings; ordinary trusts, mobs and pets keep their own.
+    virtual auto isSquadMate() const -> bool
+    {
+        return false;
+    }
+    auto usesPlayerCombatModel() const -> bool; // a player character or a squad mate
+
+    // XI: Forever Offline (squad audit N5): true while a trust or mob cannot use the ability yet. Every trust keeps its
+    // recast by ability id, as before. A squad mate also keeps a player's shared recast (the ability's recast id, with
+    // charges), under recast key SquadRecastGroupKey: Phantom Rolls, Quick Draw, Maneuvers, Sic/Ready and the like.
+    auto IsAbilityOnRecast(CAbility* PAbility) -> bool;
+    static auto SquadRecastGroupKey(const CAbility* PAbility) -> xi::Recast;
 
     auto isDead() const -> bool;
     auto isAlive() const -> bool;

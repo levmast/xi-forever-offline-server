@@ -343,6 +343,11 @@ xi.settings.main =
     -- XI: FOREVER OFFLINE COMFORTS (2026-11-22; off = the era; modules/custom/late/comforts.lua)
     CASKET_SHOW_CODE             = 0,     -- 1 = on, 0 = off (the era). A locked treasure casket tells you its combination when you examine it.
     GUILD_SHOPS_ALWAYS_STOCKED   = 0,     -- 1 = on, 0 = off (the era). Guild shops never run out of the items they sell.
+    GUILD_SHOPS_ALWAYS_OPEN      = 1,     -- 1 = on, 0 = off (the era). Guild shops have no closing hours and no weekly holiday.
+    EXP_CHAIN_TIME_MULTIPLIER    = 1.000, -- Multiplies the time you have to keep an experience chain going (1 = the era). scripts/globals/experience_points.lua
+    PLAYER_DAMAGE_TAKEN_MULTIPLIER = 1.000, -- Multiplies the damage players and squad mates take (0.5 = half, 2 = double; 1 = the era). modules/custom/late/comforts.lua
+    SEAL_DROP_MINUTES            = 5,     -- Minutes a party waits after a Beastmen's or Kindred's Seal (or another special drop) before the next can drop. 5 = the base's rule, 0 = no wait. src/map/entities/mob_entity.cpp
+    LAND_KINGS_TIMED             = 0,     -- 0 = off: Fafnir, Adamantoise and Behemoth are called at their ??? with the item. 1 = the era: they appear by themselves every 21 to 24 hours and the ??? is gone. modules/custom/late/land_kings.lua
 
     -- SYSTEM
     DISABLE_INACTIVITY_WATCHDOG = false, -- true/false. If this is enabled, the watchdog which detects if the main loop isn't being ticked will no longer be able to kill the process.

@@ -198,6 +198,12 @@ xi.experiencePoints.calculate = function(member, mob, data)
         else
             chainWindow      = bracket.start
         end
+
+        -- (XI: Forever Offline, 2026-11-22, Gilder) more time to keep a chain going: main.EXP_CHAIN_TIME_MULTIPLIER
+        local chainTime = tonumber(xi.settings.main.EXP_CHAIN_TIME_MULTIPLIER) or 1
+        if chainTime > 0 and chainTime ~= 1 then
+            chainWindow = math.min(65535, math.floor(chainWindow * chainTime))
+        end
     end
 
     -- Handle all experience point bonuses, including Dedication effects, RoV Key Items, Sanction, and EXP bonus gear/traits (Corsair Roll via xi.mod.EXP_BONUS)

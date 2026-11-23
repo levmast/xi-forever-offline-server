@@ -555,28 +555,65 @@ end
 -- at its pre-2015 spot (Phoenix). A teleport from another zone lands there (homepoint.lua), but a teleport inside the
 -- same zone is done by the game itself, with today's spot from its own files: you landed where the crystal no longer
 -- is. After such a jump the server puts you next to the crystal.
+-- (2026-11-22 evening, notsensible: it still landed at today's spot on v0.1.59.) The first version looked the crystal
+-- up by a number in the event's answer and moved you once, 1.5 seconds after the window closed. That did not work in
+-- the game: the answer need not carry the destination for a jump inside the zone, and the game's own move may come
+-- later than that. Now it goes by where the game put you. For a few seconds after the Home Point window closes in one
+-- of these zones the server looks once a second, and a player who has jumped to today's spot of crystal #1 is moved to
+-- the crystal. Only a jump counts (far more than anyone can run in a second), so walking past that spot does nothing.
+-- era = the crystal's spot here { x, y, z, rotation }; today = the spot the game jumps to { x, z }
 local MOVED_HOMEPOINTS =
 {
-    [ 6] = { -66.077,  -4, -104.948, 192, xi.zone.PORT_SAN_DORIA },
-    [11] = { -293.791, -10, -102.539, 160, xi.zone.BASTOK_MARKETS },
-    [14] = { 53.645,   7.5,  -28.682, 224, xi.zone.PORT_BASTOK },
-    [22] = { -67.980,  -4,   110.675, 192, xi.zone.PORT_WINDURST },
+    [xi.zone.PORT_SAN_DORIA] = { era = { -66.077,  -4, -104.948, 192 }, today = {  -38,  -63 } },
+    [xi.zone.BASTOK_MARKETS] = { era = { -293.791, -10, -102.539, 160 }, today = { -342, -154 } },
+    [xi.zone.PORT_BASTOK]    = { era = { 53.645,   7.5,  -28.682, 224 }, today = {  124,    7 } },
+    [xi.zone.PORT_WINDURST]  = { era = { -67.980,  -4,   110.675, 192 }, today = { -188,  101 } },
 }
 
-m:addOverride('xi.homepoint.onEventFinish', function(player, csid, option, event)
-    super(player, csid, option, event)
-    if csid ~= event or bit.band(option, 0xFF) ~= 3 or xi.settings.main.HOMEPOINT_TELEPORT ~= 1 then
+local MOVED_NEAR  = 20   -- yalms around today's spot that count as "the game put you there"
+local MOVED_JUMP  = 30   -- yalms between two looks that only a jump can cover
+local MOVED_LOOKS = 12   -- looks, one a second, after the window closes
+
+local function movedHomepointLook(player, zoneId, looksLeft, lastX, lastZ)
+    local moved = MOVED_HOMEPOINTS[zoneId]
+    if moved == nil or player:getZoneID() ~= zoneId then
         return
     end
 
-    local dest = MOVED_HOMEPOINTS[bit.rshift(option, 16)]
-    if dest and dest[5] == player:getZoneID() then
-        player:timer(1500, function(entity)
-            if entity:getZoneID() == dest[5] then
-                entity:setPos(dest[1], dest[2], dest[3], dest[4])
-            end
+    local x, z   = player:getXPos(), player:getZPos()
+    local dx, dz = x - moved.today[1], z - moved.today[2]
+    local near   = dx * dx + dz * dz <= MOVED_NEAR * MOVED_NEAR
+    -- the first look comes right after the window closed at a crystal, and no crystal stands near today's spot
+    local jumped = lastX == nil or (x - lastX) ^ 2 + (z - lastZ) ^ 2 > MOVED_JUMP * MOVED_JUMP
+
+    if near and jumped then
+        player:setPos(moved.era[1], moved.era[2], moved.era[3], moved.era[4])
+        return
+    end
+
+    if looksLeft > 1 then
+        player:timer(1000, function(entity)
+            movedHomepointLook(entity, zoneId, looksLeft - 1, x, z)
         end)
     end
+end
+
+m:addOverride('xi.homepoint.onEventFinish', function(player, csid, option, event)
+    super(player, csid, option, event)
+    if csid ~= event or xi.settings.main.HOMEPOINT_TELEPORT ~= 1 then
+        return
+    end
+
+    -- setting your home point (1) and a teleport the server does itself (2) never leave you at today's spot
+    local choice = bit.band(option, 0xFF)
+    local zoneId = player:getZoneID()
+    if choice == 1 or choice == 2 or MOVED_HOMEPOINTS[zoneId] == nil then
+        return
+    end
+
+    player:timer(300, function(entity)
+        movedHomepointLook(entity, zoneId, MOVED_LOOKS, nil, nil)
+    end)
 end)
 
 -----------------------------------

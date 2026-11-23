@@ -64,7 +64,7 @@ npcs:
         model: 50
 
   17232180:
-    script:       Treasure_Casket
+    script:       Peculiar_Footprints
     display_name: Peculiar Footprints
     at:           [401.270, 0.000, 279.150]
     render:

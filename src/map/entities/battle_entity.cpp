@@ -1171,6 +1171,11 @@ auto CBattleEntity::CHR() const -> uint16
     return std::clamp(stats.CHR + getMod(xi::Mod::CHR), 0, 999);
 }
 
+auto CBattleEntity::usesPlayerCombatModel() const -> bool
+{
+    return dynamic_cast<const CCharEntity*>(this) != nullptr || isSquadMate();
+}
+
 auto CBattleEntity::ATT(SLOTTYPE slot) -> uint16
 {
     TracyZoneScoped;
@@ -1183,7 +1188,8 @@ auto CBattleEntity::ATT(SLOTTYPE slot) -> uint16
     const auto* PMonipulator = monstrosity::AsMonipulator(this);
 
     // https://www.bg-wiki.com/ffxi/Strength
-    if (dynamic_cast<const CCharEntity*>(this) == nullptr)
+    // (XI: Forever Offline) squad mates use the player formula: weapon skill + STR by weapon type
+    if (!usesPlayerCombatModel())
     {
         strMultiplier = 0.5;
     }
@@ -1224,7 +1230,7 @@ auto CBattleEntity::ATT(SLOTTYPE slot) -> uint16
     {
         ATT += monstrosity::GetCombatSkill(PMonipulator);
     }
-    else if (dynamic_cast<const CCharEntity*>(this) != nullptr)
+    else if (usesPlayerCombatModel())
     {
         if (weapon)
         {
@@ -1274,7 +1280,7 @@ auto CBattleEntity::RATT(uint16 bonusAtt) -> uint16
     uint16 skillLevel    = 0;
     double strMultiplier = 0.5;
 
-    if (dynamic_cast<const CCharEntity*>(this) != nullptr)
+    if (usesPlayerCombatModel()) // (XI: Forever Offline) squad mates too: the ranged weapon's skill
     {
         strMultiplier = settings::get<float>("main.RANGED_STR_ATTACK_MULTIPLIER");
         auto* weapon  = dynamic_cast<CItemWeapon*>(m_Weapons[SLOT_RANGED]);
@@ -1369,7 +1375,7 @@ auto CBattleEntity::RACC(uint16 bonusAcc) -> uint16
 
     int32 RACC = 0;
 
-    if (dynamic_cast<const CCharEntity*>(this) != nullptr)
+    if (usesPlayerCombatModel()) // (XI: Forever Offline) squad mates too: the ranged weapon's skill
     {
         auto* weapon = dynamic_cast<CItemWeapon*>(m_Weapons[SLOT_RANGED]);
 
@@ -1479,7 +1485,7 @@ auto CBattleEntity::ACC(uint8 attackNumber, uint16 offsetAccuracy) -> uint16
 
     int32 ACC = 0;
 
-    if (dynamic_cast<const CCharEntity*>(this) != nullptr)
+    if (usesPlayerCombatModel()) // (XI: Forever Offline) squad mates too: weapon skill + DEX by weapon type
     {
         float         dexMultiplier = 0.5f;
         xi::SkillType skill         = xi::SkillType::None;
@@ -1663,7 +1669,8 @@ auto CBattleEntity::DEF() -> uint16
     // https://www.bg-wiki.com/ffxi/Defense
     // TODO: era setting? Was this always like this?
     // mobs & pets have this pre-calculated elsewhere (mobutils/petutils) and stored in m_modStat[Mod::DEF]
-    if (dynamic_cast<const CCharEntity*>(this) != nullptr)
+    // (XI: Forever Offline) squad mates use the player level factor instead of the trust base defense
+    if (usesPlayerCombatModel())
     {
         if (level < 51)
         {
@@ -2738,6 +2745,28 @@ void CBattleEntity::OnCastInterrupted(CMagicState& state, action_t& action, MsgB
     }
 }
 
+auto CBattleEntity::SquadRecastGroupKey(const CAbility* PAbility) -> xi::Recast
+{
+    // kept apart from the ability-id keys every trust uses (ids below 0x8000)
+    return static_cast<xi::Recast>(0x8000 | (static_cast<uint16>(PAbility->getRecastId()) & 0x7FFF));
+}
+
+auto CBattleEntity::IsAbilityOnRecast(CAbility* PAbility) -> bool
+{
+    if (PAbility == nullptr || PRecastContainer == nullptr)
+    {
+        return false;
+    }
+
+    if (PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(PAbility->getID()), 0s))
+    {
+        return true;
+    }
+
+    // a squad mate: the player check, on the shared recast id (the recast time is the charge cost for charged abilities)
+    return isSquadMate() && PRecastContainer->HasRecast(xi::RecastType::Ability, SquadRecastGroupKey(PAbility), PAbility->getRecastTime());
+}
+
 void CBattleEntity::OnAbility(CAbilityState& state, action_t& action)
 {
     auto* PAbility = state.GetAbility();
@@ -2746,6 +2775,32 @@ void CBattleEntity::OnAbility(CAbilityState& state, action_t& action)
     {
         return;
     }
+
+    // (XI: Forever Offline, squad audit N5) a squad mate's recast as a player's: the shared recast id, charges
+    // (Quick Draw, Sic/Ready...), the SIC_READY_RECAST gear mod, and a paralyzed attempt still uses the recast.
+    // The ability-id key every trust has is kept, with the old duration, so existing checks keep working.
+    const bool squadMate = isSquadMate();
+    Charge_t*  charge    = squadMate ? ability::GetCharge(this, static_cast<uint16>(PAbility->getRecastId())) : nullptr;
+    if (charge != nullptr && PAbility->getID() == ABILITY_SIC)
+    {
+        charge = nullptr; // as for a player: Sic's recast is not charged
+    }
+
+    const auto squadRecast = [&]() -> timer::duration
+    {
+        timer::duration recast = charge != nullptr ? charge->chargeTime * timer::count_seconds(PAbility->getRecastTime()) // charge cost is stored in the recast
+                                                   : PAbility->getRecastTime();
+        if (PAbility->getID() == ABILITY_READY || PAbility->getID() == ABILITY_SIC)
+        {
+            recast = std::max<timer::duration>(0s, recast - std::chrono::seconds(getMod(xi::Mod::SIC_READY_RECAST)));
+        }
+        return recast;
+    };
+
+    const auto addSquadRecast = [&](const timer::duration recast)
+    {
+        PRecastContainer->Add(xi::RecastType::Ability, SquadRecastGroupKey(PAbility), recast, charge != nullptr ? charge->chargeTime : 0s, charge != nullptr ? charge->maxCharges : 0);
+    };
 
     std::unique_ptr<CBasicPacket> errMsg;
     if (IsValidTarget(PTarget->targid, PAbility->getValidTarget(), errMsg))
@@ -2757,6 +2812,14 @@ void CBattleEntity::OnAbility(CAbilityState& state, action_t& action)
 
         if (battleutils::IsParalyzed(this))
         {
+            // a player's paralyzed ability still uses its recast (two-hour abilities excepted)
+            if (squadMate && PAbility->getRecastId() != xi::Recast::Special && PAbility->getRecastId() != xi::Recast::Special2)
+            {
+                const timer::duration recast = squadRecast();
+                PRecastContainer->Add(xi::RecastType::Ability, static_cast<xi::Recast>(PAbility->getID()), charge != nullptr ? PAbility->getRecastTime() : recast);
+                addSquadRecast(recast);
+            }
+
             ActionInterrupts::AbilityParalyzed(this, PTarget);
             return;
         }
@@ -2764,7 +2827,7 @@ void CBattleEntity::OnAbility(CAbilityState& state, action_t& action)
         action.actorId    = this->id;
         action.actiontype = PAbility->getActionType();
         action.actionid   = PAbility->getID();
-        action.recast     = PAbility->getRecastTime();
+        action.recast     = squadMate ? squadRecast() : PAbility->getRecastTime();
 
         if (PAbility->isAoE())
         {
@@ -2835,7 +2898,12 @@ void CBattleEntity::OnAbility(CAbilityState& state, action_t& action)
 
         state.ApplyEnmity();
 
-        PRecastContainer->Add(xi::RecastType::Ability, static_cast<xi::Recast>(action.actionid), action.recast);
+        // the ability-id key, as before (a charged ability only for its own charge cost there, so a second charge stays usable)
+        PRecastContainer->Add(xi::RecastType::Ability, static_cast<xi::Recast>(action.actionid), charge != nullptr ? PAbility->getRecastTime() : action.recast);
+        if (squadMate)
+        {
+            addSquadRecast(action.recast);
+        }
     }
     this->processActionEffectFlags(action);
 }

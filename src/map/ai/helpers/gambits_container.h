@@ -260,6 +260,12 @@ struct Gambit_t
     uint16                        retry_delay;
     timer::time_point             last_used;
     std::string                   identifier;
+    // XI: Forever Offline (Gambits 0.3.3, Bard role targeting): for a TANK / MELEE / CASTER / RANGED target, more roles
+    // that also qualify (OR) and roles that never do (any of them excludes; exclusion wins). Bits: 1 tank, 2 melee,
+    // 4 caster, 8 ranged. 0 / 0 = the target's own role only, as before. Set by AddGambit from the target argument's
+    // high byte (squad Rule Sets: target | include << 8 | exclude << 12).
+    uint8                         role_include{ 0 };
+    uint8                         role_exclude{ 0 };
 
     Gambit_t()
     : retry_delay(0)

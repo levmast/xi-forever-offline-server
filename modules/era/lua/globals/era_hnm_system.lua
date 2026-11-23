@@ -21,7 +21,12 @@ local hnmSystem = Module:new('era_HNM_System')
 -- Module enable/disable
 -----------------------------------
 -- Do not use along custom_HNM_System module. Choose one or the other.
-hnmSystem:setEnabled(false)
+-- (XI: Forever Offline, 2026-11-22, sparkiie) on with RULES > Comforts > "Land kings on a timer"
+-- (main.LAND_KINGS_TIMED, off by default). modules/custom/late/land_kings.lua stops the kings' 90 second idle despawn.
+do
+    local timed = xi.settings and xi.settings.main and xi.settings.main.LAND_KINGS_TIMED
+    hnmSystem:setEnabled(timed == true or (type(timed) == 'number' and timed ~= 0))
+end
 
 -----------------------------------
 -- Dragon's Aery: Fafnir, Nidhogg

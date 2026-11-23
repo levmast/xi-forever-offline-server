@@ -167,6 +167,12 @@ auto CItemWeapon::addWsPoints(uint16 points) -> bool
 
 void CItemWeapon::setSkillType(xi::SkillType skillType)
 {
+    // (XI: Forever Offline) the flags follow the new type. A trust's stand-in weapon gets its type twice for a squad mate
+    // (the template's, then the real weapon's), and a one-handed sword on a squad Paladin (template Excenmille: polearm)
+    // stayed "two-handed": STR x1.0, the two-handed hit rate cap and haste. Items loaded once are unchanged.
+    m_twoHanded = false;
+    m_ranged    = false;
+
     switch (skillType)
     {
         case xi::SkillType::GreatSword:

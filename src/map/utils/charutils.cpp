@@ -288,8 +288,20 @@ void CalculateStats(CCharEntity* PChar)
     const auto hpMerits = PChar->PMeritPoints->GetMeritValue(xi::Merit::MaxHp, PChar);
     const auto mpMerits = PChar->PMeritPoints->GetMeritValue(xi::Merit::MaxMp, PChar);
 
-    PChar->health.maxhp = static_cast<int16>(grade::GetBaseHP(race, grade::GetJobGrade(mjob, 0), mlvl, grade::GetJobGrade(sjob, 0), slvl) + hpMerits);
-    PChar->health.maxmp = static_cast<int16>(grade::GetBaseMP(race, grade::GetJobGrade(mjob, 1), mlvl, grade::GetJobGrade(sjob, 1), slvl) + mpMerits);
+    // (XI: Forever Offline, 2026-11-22, delukard) RULES > Battle > "Your HP" / "Your MP" (map.PLAYER_HP_MULTIPLIER,
+    // map.PLAYER_MP_MULTIPLIER). 1.0 is the era; a missing or zero value counts as 1.0. Squad mates follow it in
+    // trustutils.cpp. Gear, food and traits are added on top of this, as they are on top of the era's base.
+    const auto vitalRate = [](std::string_view key) -> float
+    {
+        const float rate = settings::get<float>(key);
+        return rate > 0.0f ? std::clamp(rate, 0.5f, 3.0f) : 1.0f;
+    };
+
+    const float baseHP = static_cast<float>(grade::GetBaseHP(race, grade::GetJobGrade(mjob, 0), mlvl, grade::GetJobGrade(sjob, 0), slvl) + hpMerits);
+    const float baseMP = static_cast<float>(grade::GetBaseMP(race, grade::GetJobGrade(mjob, 1), mlvl, grade::GetJobGrade(sjob, 1), slvl) + mpMerits);
+
+    PChar->health.maxhp = static_cast<int16>(std::min(30000.0f, baseHP * vitalRate("map.PLAYER_HP_MULTIPLIER")));
+    PChar->health.maxmp = static_cast<int16>(std::min(30000.0f, baseMP * vitalRate("map.PLAYER_MP_MULTIPLIER")));
 
     // Start calculating Stats
 

@@ -29,7 +29,7 @@ St.MAX_NAME      = 24
 
 -- ---------------------------------------------------------------- serialising (deterministic, so rev() is stable)
 local SET_KEYS  = { 'format', 'version', 'num', 'id', 'name', 'job', 'owner', 'readonly', 'rules' }
-local RULE_KEYS = { 'id', 'on', 'target', 'cond', 'cond2', 'action', 'retry', 'level' }
+local RULE_KEYS = { 'id', 'on', 'target', 'include', 'exclude', 'cond', 'cond2', 'action', 'retry', 'level' } -- (0.3.3: include / exclude roles)
 local STORE_KEYS = { 'format', 'version', 'sets' }
 
 local function isArray(t)

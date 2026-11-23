@@ -328,7 +328,7 @@ xi.spells.damage.calculateBaseDamage = function(caster, target, spellId, spellGr
     -- Choose system to use.
     if
         xi.spells.damage.pTable[spellId][column.MULTIPLIER_0] > 0 and -- We actually have new system values.
-        caster:isPC() and                            -- Only players use new system.
+        (caster:isPC() or caster:isSquadMate()) and  -- Only players use new system. (XI: Forever Offline: squad mates too)
         not xi.settings.main.USE_OLD_MAGIC_DAMAGE    -- New system is allowed in settings.
     then
         useNewSystem = true -- Use new system.
@@ -464,8 +464,8 @@ end
 
 -- Calculate: Multiple Target Damage Reduction (MTDR)
 xi.spells.damage.calculateMTDR = function(caster, spell)
-    -- Only players are subject to this penalty.
-    if not caster:isPC() then
+    -- Only players are subject to this penalty. (XI: Forever Offline: squad mates too)
+    if not caster:isPC() and not caster:isSquadMate() then
         return 1
     end
 
@@ -749,7 +749,13 @@ xi.spells.damage.calculateEbullienceMultiplier = function(caster, spellGroup)
 end
 
 -- CUSTOM function supported in settings.
-xi.spells.damage.calculateSkillTypeMultiplier = function(skillType)
+-- (XI: Forever Offline, 2026-11-22) These are the launcher's "damage you deal" sliders, so a monster's own spells
+-- stay as they are: only players, squad mates, trusts and pets get the multiplier.
+xi.spells.damage.calculateSkillTypeMultiplier = function(skillType, caster)
+    if caster ~= nil and caster:isMob() then
+        return 1
+    end
+
     if skillType == xi.skill.ELEMENTAL_MAGIC then
         return xi.settings.main.ELEMENTAL_POWER
     elseif skillType == xi.skill.DARK_MAGIC then
@@ -966,7 +972,7 @@ xi.spells.damage.calculateIfMagicBurst = function(caster, target, spellElement, 
     local rankTable  = { 1.5, 1.15, 0.85, 0.6, 0.5, 0.4, 0.15, 0.05, 0, 0, 0, 0, 0, 0, 0 }
 
     local resistRank = utils.clamp(target:getMod(xi.data.element.getElementalResistanceRankModifier(spellElement)), -3, 11) + 4 -- We add 4 so the minimum value is 1, for table.
-    local countBonus = caster:isPC() and 0.1 or 0.05
+    local countBonus = (caster:isPC() or caster:isSquadMate()) and 0.1 or 0.05 -- (XI: Forever Offline) squad mates: the player bonus
     local magicBurst = 1.25 + rankTable[resistRank] + countBonus * magicBurstTier
 
     -- Sengikori appears to add to base mb multiplier per JP wiki https://wiki.ffo.jp/html/20051.html
@@ -1122,7 +1128,7 @@ xi.spells.damage.useDamageSpell = function(caster, target, spell)
     local divineEmblemMultiplier      = xi.spells.damage.calculateDivineEmblemMultiplier(caster, skillType)
     local eleSealMultiplier           = xi.spells.damage.calculateEnhancedElementalSealMultiplier(caster, skillType, spellElement)
     local ebullienceMultiplier        = xi.spells.damage.calculateEbullienceMultiplier(caster, spellGroup)
-    local skillTypeMultiplier         = xi.spells.damage.calculateSkillTypeMultiplier(skillType)
+    local skillTypeMultiplier         = xi.spells.damage.calculateSkillTypeMultiplier(skillType, caster)
     local ninSkillBonus               = xi.spells.damage.calculateNinSkillBonus(caster, spellId, skillType)
     local ninFutaeBonus               = xi.spells.damage.calculateNinFutaeBonus(caster, skillType)
     local ninjutsuMultiplier          = xi.spells.damage.calculateNinjutsuMultiplier(caster, target, skillType)

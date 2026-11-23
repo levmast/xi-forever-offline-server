@@ -136,7 +136,8 @@ local function executeImmunobreak(caster, target, spell, effectId)
     end
 
     -- Early return: Only players can immunobreak. (NOTE: Any job can proc Immunobreaks.)
-    if not caster:isPC() then
+    -- (XI: Forever Offline) squad mates can too, when the setting allows it
+    if not caster:isPC() and not caster:isSquadMate() then
         return
     end
 
@@ -494,7 +495,7 @@ xi.spells.enfeebling.useEnfeeblingSpell = function(caster, target, spell)
 
     -- Break: Player petrification sucks.
     elseif spellEffect == xi.effect.PETRIFICATION then
-        if caster:isPC() then
+        if caster:isPC() or caster:isSquadMate() then -- (XI: Forever Offline) a squad mate's Break works as a player's
             subpotency = 1
         end
 

@@ -60,9 +60,12 @@ local ACTION_JA = { waltz = 'CURING_WALTZ', samba = 'DRAIN_SAMBA' }
 --   'none'                 the engine ignores the argument (it must be left out)
 --   { low, high }          a whole number in that range ({ main = n, sub = n } also allowed, as squad.lua's ruleArg reads it)
 --   'effect'               a status effect name (xi.effect)           STATUS / NOT_STATUS
+--                          (Bard song tiers) or { effect = NAME, tier = n } for one song of a song type, e.g.
+--                          { effect = 'MARCH', tier = 2 } = Victory March: only song effects, tier 1-R.MAX_SONG_TIER,
+--                          only with the map server that reads tiers (R.tierReady)
 --   'flag'                 { flag = NAME } (xi.effectFlag)            STATUS_FLAG
 --   'ecosystem'            { ecosystem = NAME } (xi.ecosystem)        IS_ECOSYSTEM
---   'ja'                   a job ability name (xi.ja)                 JA_ON_COOLDOWN (the mate's own recast of it is running)
+--   'ja'                   a job ability name (xi.ja)                 JA_ON_COOLDOWN (the mate cannot use it yet: its recast is running)
 -- A condition not listed here is not offered for Rule Sets (yet), so it fails clearly instead of being guessed at.
 -- (2026-11-20, Gambits WAR/PLD/RDM batch) HAS_MP, HAS_MP_MPP_LT/GTE (false for a target without MP), JA_ON_COOLDOWN (fixed
 -- in gambits_container.cpp) and the target PARTY_LOWEST_HPP need the map server built with that batch: R.ENGINE_NAMES are
@@ -127,6 +130,40 @@ function R.modArg(arg)
     end
 
     return id + math.floor(arg.below) * 65536
+end
+
+-- (Bard song tiers) the song effects (status_effect_container.cpp ApplyBardEffect: REQUIEM..NOCTURNE) and their tiers
+-- (enhancing_song.lua songPTable: Advancing March 1, Victory March 2, Valor Minuet V 5, Army's Paeon VI 6 ...)
+R.SONG_EFFECT_FIRST, R.SONG_EFFECT_LAST = 192, 223 -- (xi.effect.REQUIEM, xi.effect.NOCTURNE when the enum is there)
+R.MAX_SONG_TIER = 7
+
+-- true when xi_map's STATUS / NOT_STATUS read a tier (squad.cpp registers SquadStatusTierEngine)
+function R.tierReady()
+    return type(rawget(_G, 'SquadStatusTierEngine')) == 'function'
+end
+
+function R.isSongEffect(name)
+    local effects = type(xi) == 'table' and rawget(xi, 'effect') or nil
+    local id = type(effects) == 'table' and effects[name] or nil
+    if type(id) ~= 'number' then
+        return false
+    end
+
+    local first = type(effects) == 'table' and effects.REQUIEM or R.SONG_EFFECT_FIRST
+    local last = type(effects) == 'table' and effects.NOCTURNE or R.SONG_EFFECT_LAST
+    return id >= first and id <= last
+end
+
+-- (Bard song tiers) { effect = 'MARCH', tier = 2 } -> the engine's argument (effect id + tier * 65536), or nil
+function R.effectArg(arg)
+    local effects = type(xi) == 'table' and rawget(xi, 'effect') or nil
+    local tier = type(arg) == 'table' and arg.tier or nil
+    if type(arg) ~= 'table' or type(effects) ~= 'table' or type(arg.effect) ~= 'string' or type(tier) ~= 'number'
+        or tier ~= math.floor(tier) or tier < 1 or tier > R.MAX_SONG_TIER or not R.isSongEffect(arg.effect) then
+        return nil
+    end
+
+    return effects[arg.effect] + arg.tier * 65536
 end
 
 -- Conditions the engine has but that a Rule Set must not use, and why (gambits_container.cpp CheckTrigger)
@@ -207,7 +244,32 @@ local function conditionProblem(cond)
         return rangeProblem(name, arg, spec)
     end
 
-    if spec == 'effect' then
+    if spec == 'effect' and type(arg) == 'table' then
+        -- (Bard song tiers) { effect = NAME, tier = n }: nothing else in the table
+        for key in pairs(arg) do
+            if key ~= 'effect' and key ~= 'tier' then
+                return name .. ' takes { effect = NAME, tier = n } (unknown field ' .. tostring(key) .. ')'
+            end
+        end
+
+        if not isName(arg.effect) then
+            return name .. ' needs { effect = NAME, tier = n } with a song effect name like MARCH'
+        end
+
+        if known('effect', arg.effect) == false then
+            return 'unknown status effect ' .. arg.effect
+        end
+
+        if known('effect', arg.effect) and not R.isSongEffect(arg.effect) then
+            return name .. ': only song effects (MARCH, MINUET ...) take a tier, not ' .. arg.effect
+        end
+
+        if not R.tierReady() then
+            return name .. ' with a song tier needs the updated map server (xi_map, Bard song tiers)'
+        end
+
+        return rangeProblem(name .. ' tier', arg.tier, { 1, R.MAX_SONG_TIER })
+    elseif spec == 'effect' then
         if not isName(arg) then
             return name .. ' needs a status effect name like HASTE'
         end
@@ -313,6 +375,80 @@ local function jaProblem(name)
     return nil
 end
 
+-- (Gambits 0.3.3, Bard role targeting) a role target (TANK, MELEE, CASTER, RANGED) may name more roles that also qualify
+-- (include, OR) and roles that never do (exclude, any of them; exclusion wins):
+--   { target = 'MELEE', exclude = { 'TANK' } }          melee members that are not tanks (a PLD on Auto is both)
+--   { target = 'TANK', include = { 'CASTER' } }         tanks or mages
+-- The engine reads them from the target argument (gambits_container.cpp AddGambit; R.roleMasks). Bits as the engine's.
+R.ROLE_BITS = { TANK = 1, MELEE = 2, CASTER = 4, RANGED = 8 }
+R.ROLE_ORDER = { 'TANK', 'MELEE', 'CASTER', 'RANGED' }
+
+-- true when xi_map reads role filters (squad.cpp registers SquadRoleFilterEngine)
+function R.roleFilterReady()
+    return type(rawget(_G, 'SquadRoleFilterEngine')) == 'function'
+end
+
+-- why a rule's include / exclude is wrong, or nil (a rule without them: nil)
+function R.roleFilterProblem(rule)
+    if rule.include == nil and rule.exclude == nil then
+        return nil
+    end
+
+    if R.ROLE_BITS[rule.target or ''] == nil then
+        return 'include / exclude roles only work with the targets TANK, MELEE, CASTER or RANGED'
+    end
+
+    local seen = { [rule.target] = 'target' }
+    for _, key in ipairs({ 'include', 'exclude' }) do
+        local list = rule[key]
+        if list ~= nil then
+            if type(list) ~= 'table' or #list == 0 or #list > 3 then
+                return key .. ' must be a list of 1-3 roles (TANK, MELEE, CASTER, RANGED)'
+            end
+
+            for k in pairs(list) do
+                if type(k) ~= 'number' or k < 1 or k > #list or k ~= math.floor(k) then
+                    return key .. ' must be a plain list of roles'
+                end
+            end
+
+            for _, role in ipairs(list) do
+                if R.ROLE_BITS[role] == nil then
+                    return key .. ': unknown role ' .. tostring(role) .. ' (TANK, MELEE, CASTER or RANGED)'
+                end
+
+                if seen[role] then
+                    return string.format('the role %s is named twice (%s and %s): a role is either included or excluded',
+                        role, seen[role], key)
+                end
+
+                seen[role] = key
+            end
+        end
+    end
+
+    if not R.roleFilterReady() then
+        return 'include / exclude roles need the updated map server (xi_map, role filters)'
+    end
+
+    return nil
+end
+
+-- { target, include, exclude } -> the engine's target argument (target id | include bits << 8 | exclude bits << 12), or
+-- the plain target id when the rule has no role filter
+function R.roleMasks(rule, targetId)
+    local inc, exc = 0, 0
+    for _, role in ipairs(type(rule.include) == 'table' and rule.include or {}) do
+        inc = inc + (R.ROLE_BITS[role] or 0)
+    end
+
+    for _, role in ipairs(type(rule.exclude) == 'table' and rule.exclude or {}) do
+        exc = exc + (R.ROLE_BITS[role] or 0)
+    end
+
+    return targetId + inc * 256 + exc * 4096, inc, exc
+end
+
 -- Problems with one rule (an empty list = fine)
 function R.ruleProblems(rule)
     local out = {}
@@ -334,6 +470,11 @@ function R.ruleProblems(rule)
         out[#out + 1] = 'unknown target ' .. rule.target
     elseif R.ENGINE_NAMES[rule.target] and not R.engineReady() then
         out[#out + 1] = 'the target ' .. rule.target .. ' needs the updated map server (xi_map)'
+    end
+
+    local roleWhy = R.roleFilterProblem(rule)
+    if roleWhy then
+        out[#out + 1] = roleWhy
     end
 
     local problem = conditionProblem(rule.cond)

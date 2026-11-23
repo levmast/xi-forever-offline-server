@@ -31,7 +31,10 @@ J.REQUEST_SECS = 8           -- a Sneak/Trick Attack request the squad could not
 J.BACKOFF_SECS = 10          -- ... and new requests are refused for this long (no endless retries)
 J.SPIRIT_LINK_SECS = 5       -- at most one Spirit Link try this often
 
-J.songs = {}                 -- [bard entity id] = { [song family id] = { all = bool, roles = { [role] = true } } }
+J.songs = {}                 -- [bard entity id] = { fam = { [song family id] = entry }, spell = { [spell id] = entry } },
+                             -- entry = { all = bool, roles = { [role] = true } (single-role rules), filters = { { inc =
+                             -- { [role] = true }, exc = { [role] = true } } (0.3.3: rules with include / exclude roles) } }
+                             -- (spell: rules naming that one song)
 J.uses  = {}                 -- [mate entity id] = { [job ability name] = true } (the abilities its Rule Set uses)
 
 function J.engine2()
@@ -136,7 +139,7 @@ function J.analyse(mob, rules)
         return
     end
 
-    local uses, songs, songIds, limited = {}, {}, familyIds(), false
+    local uses, songs, songIds, limited = {}, { fam = {}, spell = {} }, familyIds(), false
     local managed, hold = false, false
     for _, rule in ipairs(rules) do
         if type(rule) == 'table' and rule.on ~= false and type(rule.action) == 'table' then
@@ -150,10 +153,32 @@ function J.analyse(mob, rules)
 
             local fam = actionFamily(rule.action)
             if fam and songIds[fam] then
-                local entry = songs[fam] or { all = false, roles = {} }
-                songs[fam] = entry
+                -- (Bard song tiers) a rule naming one song (a specific spell) keeps its roles for that song alone, so
+                -- "Victory March -> Tank" and "Advancing March -> Melee" stay apart; a family rule covers the family
+                local spellId = rule.action[1] == 'spell' and xi.magic.spell[rule.action[2]] or nil
+                local list, key = songs.fam, fam
+                if spellId then
+                    list, key = songs.spell, spellId
+                end
+
+                local entry = list[key] or { all = false, roles = {}, filters = {} }
+                list[key] = entry
                 local role = J.TARGET_ROLE[rule.target or '']
-                if role then
+                if role and (rule.include ~= nil or rule.exclude ~= nil) then
+                    -- (Gambits 0.3.3, Bard role targeting) this rule's members: any of its included roles (its target's and
+                    -- include), none of its excluded ones - the same test the engine makes for the rule's target
+                    local filter = { inc = { [role] = true }, exc = {} }
+                    for _, name in ipairs(type(rule.include) == 'table' and rule.include or {}) do
+                        if J.TARGET_ROLE[name] then filter.inc[J.TARGET_ROLE[name]] = true end
+                    end
+
+                    for _, name in ipairs(type(rule.exclude) == 'table' and rule.exclude or {}) do
+                        if J.TARGET_ROLE[name] then filter.exc[J.TARGET_ROLE[name]] = true end
+                    end
+
+                    entry.filters[#entry.filters + 1] = filter
+                    limited = true
+                elseif role then
                     entry.roles[role] = true
                     limited = true
                 else
@@ -193,13 +218,45 @@ function J.songRecipient(caster, target, spellId)
         end
     end
 
-    local entry = fam and map[fam]
-    if entry == nil or entry.all then
+    -- (Bard song tiers) the rules for this very song and those for its family: a song neither names reaches everyone,
+    -- as before; when both name it, a member of any of their roles gets it (a song is never taken away by a split)
+    local entries = { map.spell[spellId], fam and map.fam[fam] or nil }
+    if entries[1] == nil and entries[2] == nil then
         return true
     end
 
-    for role in pairs(entry.roles) do
-        if J.inRole(target, role) then
+    for i = 1, 2 do
+        local entry = entries[i]
+        if entry and entry.all then
+            return true
+        end
+
+        for role in pairs(entry and entry.roles or {}) do
+            if J.inRole(target, role) then
+                return true
+            end
+        end
+
+        for _, filter in ipairs(entry and entry.filters or {}) do
+            if J.filterMatches(target, filter) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- (Gambits 0.3.3) a member matches a role filter when it is in ANY included role and in NO excluded one
+function J.filterMatches(member, filter)
+    for role in pairs(filter.exc) do
+        if J.inRole(member, role) then
+            return false
+        end
+    end
+
+    for role in pairs(filter.inc) do
+        if J.inRole(member, role) then
             return true
         end
     end
@@ -462,6 +519,20 @@ function J.squadRoleHint(player, mate, roleWord, slot)
 
     return string.format('For Gambits\' Tank target use !squad partyrole %s tank (the Role only changes how %s acts).',
         tostring(slot or mate.slot or '<slot>'), mate.name)
+end
+
+-- (role clarity) the one line after !squad job <slot> <job> when the main job really changed and the mate keeps a
+-- Role chosen by hand (SQUAD_AI_<mate id> is per mate, not per job). Information only: the Role, the job rules and the
+-- AI are not touched. nil for Auto, an unchanged job or a missing mate. Only the job command calls this, so a call,
+-- a zone change or the menus never repeat it.
+function J.roleKeptHint(mate, roleWord, oldJob, newJob, jobName)
+    if mate == nil or type(roleWord) ~= 'string' or roleWord == 'auto' or oldJob == newJob then
+        return nil
+    end
+
+    -- (polish) short enough for one chat line: at most 82 bytes (a 15-letter name, "Support")
+    return string.format('Squad: %s changed to %s. Role %s retained (default rules only).',
+        tostring(mate.name), tostring(jobName), roleWord:sub(1, 1):upper() .. roleWord:sub(2))
 end
 
 -- ---------------------------------------------------------------- Sneak Attack / Trick Attack under the Rule Set

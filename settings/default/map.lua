@@ -156,8 +156,9 @@ xi.settings.map =
     -- [FFXI Offline] The daily fishing limits (200 catches and the fatigue meter). false = fish as much as you like.
     FISHING_DAILY_LIMITS = true,
 
-    -- [FFXI Offline] 1 = the fishing minigame (today's game). 0 = era fishing: no fight on screen, the catch (or a lost
-    -- catch, a broken line or rod, by your skill) is decided as soon as the fish bites.
+    -- [FFXI Offline] 1 = the fishing minigame (today's game). 0 = era fishing: after the bite line you reel in (confirm)
+    -- or let go (cancel); there is no fight to win, the catch (or a lost catch, a broken line or rod) is decided by
+    -- your skill.
     FISHING_MINIGAME = 1,
 
     -- Sets the minimum level a character must be to fish.
@@ -181,11 +182,15 @@ xi.settings.map =
     NM_HP_MULTIPLIER        = 1.0,
     MOB_HP_MULTIPLIER       = 1.0,
     ALTER_EGO_HP_MULTIPLIER = 1.0,
+    -- (XI: Forever Offline) you and your squad mates: base HP before gear, food and traits. 0.5 to 3.0
+    PLAYER_HP_MULTIPLIER    = 1.0,
 
     -- Adjust max MP pool for NMs, regular mobs, players, and trusts/fellows. Acts as a multiplier, so default is 1. Valid range: 0.1 to 2.0
     NM_MP_MULTIPLIER        = 1.0,
     MOB_MP_MULTIPLIER       = 1.0,
     ALTER_EGO_MP_MULTIPLIER = 1.0,
+    -- (XI: Forever Offline) you and your squad mates: base MP. 0.5 to 3.0
+    PLAYER_MP_MULTIPLIER    = 1.0,
 
     -- Sets the fraction of MP a subjob provides to the main job. Retail is half and this acts as a divisor so default is 2
     SJ_MP_DIVISOR = 2.0,
@@ -255,6 +260,7 @@ xi.settings.map =
 
     -- (XI: Forever Offline, 2026-11-22) 1 = no per-group merit caps: every merit can go to its own maximum.
     FULL_MERITS = 0, -- 1 = on, 0 = off (the era)
+    AH_ANYWHERE = 0, -- 1 = on, 0 = off (the era). The auction house answers in every area (the ahgo add-on's /ah). src/map/packets/c2s/0x04e_auc.cpp
 
     -- Minimum time between uses of yell command (in seconds).
     YELL_COOLDOWN = 30,

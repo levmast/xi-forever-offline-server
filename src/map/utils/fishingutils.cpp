@@ -3112,8 +3112,14 @@ void FishingAction(CCharEntity* PChar, const GP_CLI_COMMAND_FISHING_2_MODE mode,
                 PChar->animation = xi::Animation::NewFishingFish;
                 if (settings::get<uint8>("map.FISHING_MINIGAME") == 0)
                 {
-                    // (XI: Forever Offline, 2026-11-22) era fishing: no fight on screen, the catch is decided at once
-                    finishFight(response->special);
+                    // (XI: Forever Offline, 2026-11-22) era fishing. The first version reeled the catch in by itself
+                    // the moment it bit, so nothing could be let go (Dugahst: in the era the bite line told you what
+                    // was on the hook, and you chose). Now the bite line shows and the game waits for you: confirm
+                    // reels in, cancel lets go. The game can only wait inside its fishing screen, so that screen is
+                    // opened with a fish that never recovers and that one hit wears out; there is nothing to win in
+                    // it, because in this mode confirm reels in whatever the fish's stamina is (RequestEndMiniGame
+                    // below), and the server's own reel check decides the rest, as before.
+                    PChar->pushPacket<GP_SERV_COMMAND_FISH>(response->stamina, 0, response->response, response->stamina, response->delay, 0, response->timelimit, response->hooksense, response->special);
                 }
                 else
                 {
@@ -3134,7 +3140,11 @@ void FishingAction(CCharEntity* PChar, const GP_CLI_COMMAND_FISHING_2_MODE mode,
                 return;
             }
 
-            if (stamina <= 4)
+            // (XI: Forever Offline, 2026-11-22) era fishing has no fight: reeling in with the fish at any stamina is a
+            // reel (up to 0x64 is "you confirmed"; above that is giving up or the time running out, as always)
+            const bool eraReel = settings::get<uint8>("map.FISHING_MINIGAME") == 0 && stamina <= 0x64;
+
+            if (stamina <= 4 || eraReel)
             {
                 finishFight(special);
             }

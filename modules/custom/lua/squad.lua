@@ -271,10 +271,14 @@ local function usage(player)
     say(player, '!squad gear <slot>   (gear is saved per job; equip slots: head body hands legs feet main sub range ammo neck waist ear1 ear2 ring1 ring2 back)')
     say(player, '!squad rename <slot> <name>   |   !squad delete <slot>')
     say(player, '!squad call [slot or all]   |   !squad dismiss [slot]   |   !squad food   (what they have eaten)')
+    say(player, '!squad ls   |   !squad ls <slot | all> on | off   - put squad mates on your linkshell: they talk there, out with you or not')
+    say(player, '!squad food <slot>   - choose what that mate eats (a food is unlocked once, for its auction house price)   |   !squad food <slot> auto')
     say(player, '!squad ai   |   !squad role <slot> <auto|tank|damage|healer|support>   |   !squad mode <slot> <balanced|aggressive|conserve>')
-    say(player, '!squad engage first | normal   - mates join as soon as you engage, or after your first swing (retail)')
+    say(player, '!squad engage first | normal   - mates join as soon as you engage (the default), or after your first swing (retail)')
+    say(player, '!squad attack   - your squad attacks the monster you have targeted, without you drawing your weapon (also while you rest)   |   !squad stop')
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
     say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
+    say(player, '!squad autoequip now [slot]   - put the best given gear on once, right now, and keep choosing by hand')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad spells <slot>   - every spell one squad mate has now')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
@@ -283,6 +287,7 @@ local function usage(player)
     say(player, '!squad order <slots, e.g. 3,1,2,4,5>   - who "call all" brings out first (and party order)   |   !squad order reset')
     say(player, '!squad camp rest on | off   - mates sit and rest at camp while the pull is out')
     say(player, '!squad rest fight on | off   - healers and mages low on MP sit down mid-fight while nobody needs them')
+    say(player, '!squad camp wait on | off   - on: the puller waits while you rest or are low on MP (off, the default: it keeps pulling)')
     say(player, '!squad camp levels <low> <high> | reset   - monster levels the puller goes for, against yours (e.g. -10 0)')
     say(player, '!squad sw <slot> <melee|ranged|ja|magic|all> <on|off>   - stop one kind of action, e.g. stop a healer from meleeing')
     say(player, '!squad lore <slot>   - write (or rewrite) that mate\'s backstory')
@@ -307,6 +312,15 @@ if not foodLoaded or type(food) ~= 'table' then
     print('[squad] could not load squad_food.lua - squad mates will not eat')
     food = { enabled = false }
 end
+
+-- (2026-11-22, Altair) a mate can be told what to eat: !squad food <slot> (squad_meals.lua)
+local mealsLoaded, meals = pcall(require, 'modules/custom/lua/squad_meals')
+if not mealsLoaded or type(meals) ~= 'table' then
+    print('[squad] could not load squad_meals.lua - squad mates pick their own food')
+    meals = nil
+end
+
+food.meals = meals -- (the command function below is at LuaJIT's limit of 60 outside names: it reaches this one through food)
 
 local function chooseFood(job, level)
     local role = food.roleByJob and food.roleByJob[job]
@@ -517,7 +531,7 @@ local function eatIfNeeded(mob)
         return
     end
 
-    local meal = chooseFood(mob:getMainJob(), level)
+    local meal = (meals and meals.chosen(mob, food)) or chooseFood(mob:getMainJob(), level)
     if meal == nil then
         return
     end
@@ -612,6 +626,10 @@ local function levelsFor(mate, cap, player)
     -- (75/37, the default), 2 two thirds (75/50), 3 equal (75/75). It was always half before.
     local ratio = tonumber(xi.settings and xi.settings.map and xi.settings.map.SUBJOB_RATIO) or 1
     local subCap = ratio == 3 and main or ratio == 2 and math.floor(main * 2 / 3) or ratio == 0 and 0 or math.floor(main / 2)
+    if ratio ~= 0 and subCap < 1 then
+        subCap = 1 -- (as for players: a main level 1 character has a level 1 support job, battle_entity.cpp SetSLevel)
+    end
+
     if mate.sjob ~= 0 and mate.sjob ~= mate.mjob and unlocked and subCap > 0 then
         sub = mate.sjob
         subLevel = math.max(1, math.min(jobLevel(mate, sub), subCap))
@@ -751,6 +769,7 @@ function squadCampLevels(player)
 
     return CAMP_LEVELS[1], CAMP_LEVELS[2], false
 end
+
 local CAMP_PULL_TIMEOUT = 300       -- seconds before a pull that did not work is given up (a 400 yalm run out and back)
 local CAMP_PULL_GAP     = { 4, 8 }  -- seconds of quiet at camp before the next pull
 local CAMP_READY_HP     = 60        -- everyone at least this much HP (%) before a pull
@@ -769,6 +788,16 @@ local function squadTrusts(player)
         if member:getObjType() == xi.objType.TRUST and member:getLocalVar('SQUAD_ID') > 0 and xi.squad.mine(player, member) then
             out[#out + 1] = member
         end
+    end
+
+    return out
+end
+
+-- (2026-11-22, squad_shell.lua) { [mate id] = true } for the mates out with you now
+xi.squad.outIds = function(player)
+    local out = {}
+    for _, trust in ipairs(squadTrusts(player)) do
+        out[trust:getLocalVar('SQUAD_ID')] = true
     end
 
     return out
@@ -807,6 +836,27 @@ local function percentOf(entity, now, max)
     end
 
     return math.floor(entity[now](entity) * 100 / top)
+end
+
+-- (2026-11-22, Hasuko; the user: "make the camp keep pulling while mage players rest (or any player)") Does this
+-- player-type party member hold the next pull? A player who rests holds nothing: sit down for MP and the squad
+-- carries on. A player on his feet holds it only while hurt (HP under CAMP_READY_HP); his MP no longer counts. A bot
+-- player is judged like a mate, by HP and MP, and one that sits only because you do is not waited for.
+-- !squad camp wait on brings the old rule back for the players: also wait while one rests or is low on MP.
+-- A global: this file is at Lua's limit for locals.
+function squadCampWaitsFor(player, member)
+    local hp = percentOf(member, 'getHP', 'getMaxHP')
+    local mp = member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') or 100
+    local resting = member:getAnimation() == xi.animation.HEALING
+    if BotIsBot and BotIsBot(member:getID()) then
+        return hp < CAMP_READY_HP or mp < CAMP_READY_MP or (resting and (hp < 100 or mp < 100))
+    end
+
+    if player:getCharVar('SQUAD_CAMP_WAIT') == 1 then
+        return resting or hp < CAMP_READY_HP or mp < CAMP_READY_MP
+    end
+
+    return not resting and hp < CAMP_READY_HP
 end
 
 -- What the puller may go for: c.want holds one or more monster names, comma separated.
@@ -883,6 +933,38 @@ function squadLinkCount(pool, mob, pos)
 end
 
 -- the next monster for the puller: in range of camp, the right level, nobody else's, nearest to camp first
+-- (2026-11-22, Hasuko, FalconX51, Yenkei: "conflicting info from what level it will pull") The level the pull window is
+-- counted from: the lowest of you and your living squad mates (since 2026-11-19, so a pull is fair for everyone who
+-- has to fight it). The chat lines said "your level" and showed your own, so a party with lower mates looked stuck.
+-- Returns the level and whose it is. Global: squad.lua is at the local limit.
+function squadCampBase(player)
+    local lvl, who = player:getMainLvl(), player:getName()
+    pcall(function()
+        for _, t in ipairs(squadTrusts(player)) do
+            if t:isAlive() and t:getMainLvl() > 0 and t:getMainLvl() < lvl then
+                lvl, who = t:getMainLvl(), t:getPacketName()
+            end
+        end
+    end)
+
+    return lvl, who
+end
+
+-- "level 12-20 (counted from Aster, the lowest in your party at 18)" for the chat lines about the window
+function squadCampWindowText(player, low, high)
+    local lvl, who = squadCampBase(player)
+    if low == nil or high == nil then
+        low, high = squadCampLevels(player)
+    end
+
+    local text = string.format('level %d-%d', math.max(1, lvl + low), math.max(1, lvl + high))
+    if who ~= player:getName() then
+        text = text .. string.format(' (counted from %s, the lowest in your party at %d)', who, lvl)
+    end
+
+    return text
+end
+
 local function campPick(player, c)
     local zone = player:getZone()
     if zone == nil then
@@ -905,14 +987,7 @@ local function campPick(player, c)
 
     -- 2026-11-19: the level window is measured from the weakest one in the party, not from you (Nishiko pulled a level 46 Doom Scorpion
     -- onto a level 40 squad because you are higher): a pull has to be fair for everyone who has to fight it
-    local lvl = player:getMainLvl()
-    pcall(function()
-        for _, t in ipairs(squadTrusts(player)) do
-            if t:isAlive() and t:getMainLvl() > 0 and t:getMainLvl() < lvl then
-                lvl = t:getMainLvl()
-            end
-        end
-    end)
+    local lvl = squadCampBase(player)
 
     local range = campRange(player)
     local wants = campWants(c)
@@ -1441,7 +1516,8 @@ local function campTick(mob)
         return
     end
 
-    -- everyone ready? (not while anyone rests, nobody hurt, everyone with MP has some: you, a second character, the mates)
+    -- everyone ready? (nobody on his feet hurt, the mates and bot players with MP have some; a player who sits down to
+    -- rest is not waited for: squadCampWaitsFor)
     local everyone = {}
     for _, member in pairs(player:getPartyWithTrusts() or {}) do
         everyone[#everyone + 1] = member
@@ -1475,16 +1551,18 @@ local function campTick(mob)
         return (not anyHealer or isHealer(member)) and member:getMaxMP() > 0 and percentOf(member, 'getMP', 'getMaxMP') < CAMP_READY_MP
     end
 
-    -- (2026-11-23, levi) with camp fight on (squad_campfight.lua, !squad campfight on|off) you sitting down no longer holds
-    -- the pull by itself: the squad keeps pulling and fighting while you rest. Your HP and MP (MP if you are the healer) still do.
+    -- (2026-11-23, merged with upstream's squadCampWaitsFor) who holds the pull: anyone squadCampWaitsFor says (a player on
+    -- his feet who is hurt, a bot player short of HP/MP, everyone resting or low on MP with !squad camp wait on); a player
+    -- on his feet low on MP when he is the healer (or nobody is: mpLow); and a player who sits down only when camp fight is
+    -- off (squad_campfight.lua, !squad campfight on|off), otherwise the squad keeps pulling and fighting while you rest.
     local restHolds = not (rawget(_G, 'SQUAD_CAMPFIGHT') and SQUAD_CAMPFIGHT.on(player))
     for _, member in ipairs(everyone) do
-        local sitting = restHolds and member:getAnimation() == xi.animation.HEALING
-        if member:getObjType() == xi.objType.PC and (sitting or percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP or
-            mpLow(member)) then
+        local resting = member:getAnimation() == xi.animation.HEALING
+        if member:getObjType() == xi.objType.PC and (squadCampWaitsFor(player, member) or (restHolds and resting) or
+            (not resting and mpLow(member))) then
             -- (2026-11-21) the line names who is short and of what: it was read as the healer's MP when it was yours
             local hpLow = percentOf(member, 'getHP', 'getMaxHP') < CAMP_READY_HP
-            local short = sitting and 'is resting' or (hpLow and 'needs HP' or 'needs MP')
+            local short = resting and 'is resting' or (hpLow and 'needs HP' or 'needs MP')
             if not c.waitSaid then
                 c.waitSaid = true
                 campSay(player, puller, string.format('waiting a bit, %s %s', member:getName(), short))
@@ -1520,7 +1598,13 @@ local function campTick(mob)
         if not c.noneSaid then
             c.noneSaid = true
             local wantLabel = campWantLabel(c)
-            campSay(player, nil, wantLabel and ('no ' .. wantLabel .. ' around right now, waiting for pops') or 'nothing to pull nearby, waiting for pops')
+            local okBase, baseLvl = pcall(squadCampBase, player)
+            local okText, window = pcall(squadCampWindowText, player)
+            if wantLabel then
+                campSay(player, nil, 'no ' .. wantLabel .. (okBase and string.format(' up to level %d', baseLvl + CAMP_WANT_ABOVE) or '') .. ' around right now, waiting for pops')
+            else
+                campSay(player, nil, 'nothing to pull nearby' .. (okText and (': looking for ' .. window .. '. !squad camp levels <below> <above> changes that') or ', waiting for pops'))
+            end
         end
 
         return
@@ -2124,7 +2208,9 @@ local function chatRead(player)
         end
         if kind == 'SAY' and mate ~= '' and text ~= '' then
             xi.squad.aiSaidAt = os.time() -- (the pack's fight and idle lines stay quiet while the AI talks)
-            player:printToPlayer(text, 4, mate)
+            -- (a member's answer to something you said on the linkshell goes there: squad_shell.lua; else party chat)
+            local channel = type(xi.squad.shell) == 'table' and xi.squad.shell.channelForReply(player, mate) or 4
+            player:printToPlayer(text, channel, mate)
             print(string.format('[squad] chat %s: %s', mate, text))
         elseif kind == 'NOTE' and text ~= '' then
             player:printToPlayer('[Squad] ' .. text)
@@ -2181,6 +2267,31 @@ xi.squad.onPartyChat = function(player, text)
     end
 
     chatSend('CHAT', player:getName(), text)
+end
+
+-- (2026-11-22; Truth, the user) squad mates on your linkshell: squad_shell.lua. A line you say on the linkshell goes to
+-- the chat helper like a party line when the AI can answer it (chat on, a mate out); true = it went.
+xi.squad.shellToAI = function(player, text)
+    if not CHAT_ACTIVE or xi.squad.visitor(player) or not chatEnabled(player) or not chatHasActive(player) then
+        return false
+    end
+
+    text = chatClean(text)
+    if text == '' or string.sub(text, 1, 1) == '!' then
+        return false
+    end
+
+    chatSend('CHAT', player:getName(), text)
+    return true
+end
+
+do
+    local okShell, shellMod = pcall(require, 'modules/custom/lua/squad_shell')
+    if okShell and type(shellMod) == 'table' then
+        xi.squad.shell = shellMod
+    else
+        print('[squad] could not load squad_shell.lua - no squad mates on the linkshell: ' .. tostring(shellMod))
+    end
 end
 
 local nationNames = { [0] = "San d'Oria", [1] = 'Bastok', [2] = 'Windurst' }
@@ -2309,11 +2420,29 @@ end
 
 function squadAutoEquip(player, mate)
     local job, lvl = mate.mjob, levelsFor(mate)
-    local cand = {}
+    -- (2026-11-22, lilibun: a Warrior in a Silver Hairpin, the highest-level piece it could wear) every piece is rated
+    -- for the job: what it adds, and for a weapon how hard it hits in that job's hands (SQUAD_GEAR_SCORE,
+    -- modules/custom/late/squad_gear_score.lua). The best rated goes first; a piece that only hurts the job is left
+    -- off. Without ratings (an xi_map that sends no stats) the highest level goes first, as before.
+    local rate = type(SQUAD_GEAR_SCORE) == 'table' and SQUAD_GEAR_SCORE.rate or nil
+    SQUAD_ITEM_INFO = SQUAD_ITEM_INFO or {} -- (what an item is does not change while the server runs)
+    local cand, scored = {}, rate ~= nil
     for itemId in pairs(GetSquadUnlocks(player:getID()) or {}) do
-        local info = GetSquadItemInfo(itemId)
+        local info = SQUAD_ITEM_INFO[itemId]
+        if info == nil then
+            info = GetSquadItemInfo(itemId)
+            SQUAD_ITEM_INFO[itemId] = info
+        end
+
         if info and info.valid and info.level <= lvl and hasBit(info.jobs, job - 1) then
-            cand[#cand + 1] = { id = itemId, info = info }
+            local score = nil
+            if scored then
+                local ok, value = pcall(rate, info, job, lvl)
+                score = ok and type(value) == 'number' and value or nil
+                scored = score ~= nil
+            end
+
+            cand[#cand + 1] = { id = itemId, info = info, score = score }
         end
     end
 
@@ -2322,12 +2451,20 @@ function squadAutoEquip(player, mate)
     end
 
     table.sort(cand, function(a, b)
+        if scored and a.score ~= b.score then
+            return a.score > b.score
+        end
+
         return a.info.level > b.info.level or (a.info.level == b.info.level and a.id < b.id)
     end)
 
     local used, pick = {}, {}
     local function best(slot, ok)
         for _, c in ipairs(cand) do
+            if scored and c.score < 0 then
+                break -- (sorted: everything from here on would make this job worse)
+            end
+
             if hasBit(c.info.slot, slot) and not used[c.id] and (ok == nil or ok(c.info)) then
                 used[c.id] = true
                 return c.id, c.info
@@ -2486,6 +2623,14 @@ local function callMate(player, mate)
 
     trust:renameEntity(mate.name, true)
     trust:setLocalVar('SQUAD_ID', mate.id) -- make sure the tag is there after spawning
+    if meals then
+        pcall(meals.onSpawn, player, trust, mate) -- the food it was told to eat (!squad food <slot>)
+    end
+
+    -- (2026-11-22) the "damage you and your squad take" rule (modules/custom/late/comforts.lua)
+    if type(xi.comforts) == 'table' and type(xi.comforts.damageTaken) == 'function' then
+        pcall(xi.comforts.damageTaken, trust)
+    end
     trust:setLocalVar('SQUAD_WSTP', player:getCharVar('SQUAD_WSTP_' .. mate.id)) -- its own weapon skill timing (!squad ws)
     if wsSettings then
         -- Gambits weapon skill settings for this job (Custom / Squad default), else the !squad ws timing just set
@@ -2889,6 +3034,81 @@ function fightRest.stop(mob, master)
     end
 end
 
+-- your camp, if it is in the zone you are in
+-- (merge 2026-11-23: a field, not a local; with the mid-fight rest table this chunk was over LuaJIT's 200 locals)
+xi.squad.campHere = function(player)
+    local c = camps[player:getID()]
+    return c and c.zone == player:getZoneID() and c or nil
+end
+
+-- (2026-11-22, Hasuko) !squad attack / !squad stop: see the command. Returns true when the squad was sent.
+xi.squad.ATTACK_REACH = 50      -- yalms from you: as far as you can target
+xi.squad.ATTACK_CAMP_REACH = 20 -- at a camp the squad only fights this close to it (CampFightRadius in trust_controller.cpp)
+xi.squad.attackOrder = function(player, stop)
+    local mates = squadTrusts(player)
+    if stop then
+        local had = player:getLocalVar('SQUAD_ATTACK_TARGET') ~= 0
+        player:setLocalVar('SQUAD_ATTACK_TARGET', 0)
+        if not player:isEngaged() then
+            for _, mate in ipairs(mates) do
+                if mate:isEngaged() and not xi.squad.campHere(player) then
+                    pcall(function() mate:disengage() end)
+                end
+            end
+        end
+
+        say(player, had and 'Your squad breaks off.' or 'Your squad has no attack order. (!squad attack sends it at your target.)')
+        return false
+    end
+
+    local mob = player:getCursorTarget()
+    if mob == nil or mob:getObjType() ~= xi.objType.MOB or
+        (xi.allegiance and xi.allegiance.MOB and mob:getAllegiance() ~= xi.allegiance.MOB)
+    then
+        say(player, 'Target a monster first, then !squad attack (or the Attack button in the Squads menu). You do not have to draw your weapon.')
+        return false
+    end
+
+    local name = (tostring(mob:getName()):gsub('_', ' '))
+    if not mob:isAlive() then
+        say(player, 'The ' .. name .. ' is already dead.')
+        return false
+    end
+
+    if #mates == 0 then
+        say(player, 'None of your squad mates is out. Call them first (!squad call all).')
+        return false
+    end
+
+    if player:checkDistance(mob) > xi.squad.ATTACK_REACH then
+        say(player, string.format('The %s is too far away (%d yalms; up to %d).', name, math.floor(player:checkDistance(mob)), xi.squad.ATTACK_REACH))
+        return false
+    end
+
+    local c = xi.squad.campHere(player)
+    if c then
+        local p = mob:getPos()
+        local away = math.sqrt((p.x - c.x) ^ 2 + (p.z - c.z) ^ 2)
+        if away > xi.squad.ATTACK_CAMP_REACH then
+            say(player, string.format('At a camp your squad only fights within %d yalms of it, and the %s is %d away. !squad camp off lets them roam with you.',
+                xi.squad.ATTACK_CAMP_REACH, name, math.floor(away)))
+            return false
+        end
+    end
+
+    player:setLocalVar('SQUAD_ATTACK_TARGET', mob:getTargID())
+    player:setLocalVar('SQUAD_ATTACK_ZONE', player:getZoneID())
+    player:setLocalVar('SQUAD_ATTACK_SEEN', os.time())
+    for _, mate in ipairs(mates) do
+        if mate:getAnimation() == xi.animation.HEALING then
+            mate:setAnimation(xi.animation.NONE) -- (sitting with you: up, the fight is on)
+        end
+    end
+
+    say(player, 'Your squad attacks the ' .. name .. '. Stay out of it if you like: no need to draw your weapon. !squad stop calls them back.')
+    return true
+end
+
 restTick = function(mob)
     local master = mob:getMaster()
     if master == nil or master:getObjType() ~= xi.objType.PC then
@@ -2904,7 +3124,10 @@ restTick = function(mob)
     end
 
     local sitting = mob:getAnimation() == xi.animation.HEALING
-    local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged()
+    -- (2026-11-22: the camp pulls while you rest now, so the puller on its way out must not be sat down with you)
+    local resting = master:getAnimation() == xi.animation.HEALING and not mob:isEngaged() and not master:isEngaged() and
+        mob:getLocalVar('SQUAD_PULL_PHASE') == 0 and
+        master:getLocalVar('SQUAD_ATTACK_TARGET') == 0 -- (!squad attack: sent in while you rest, so not sitting with you)
 
     -- Resting mid-fight (above): looked at once a second, the answer is kept in between
     local fightResting = mob:getLocalVar('SQUAD_FIGHT_REST') == 1
@@ -3304,11 +3527,31 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         return
     end
 
+    -- squad mates on your linkshell (squad_shell.lua)
+    if action == 'ls' or action == 'linkshell' or action == 'shell' then
+        if type(xi.squad.shell) == 'table' then
+            xi.squad.shell.command(player, say, arg1, arg2)
+        else
+            say(player, 'Squad mates on the linkshell are not available (squad_shell.lua did not load).')
+        end
+
+        return
+    end
+
     -- what each mate out with you has eaten, and how long it lasts
     if action == 'food' then
         if not food.enabled then
             say(player, 'Squad food is switched off (squad_food.lua).')
             return
+        end
+
+        -- !squad food <slot> [auto]: choose what that mate eats (squad_meals.lua)
+        if food.meals and arg1 ~= nil and arg1 ~= '' then
+            local handled = food.meals.command(player, GetSquad(player:getID()) or {}, arg1, arg2,
+                { food = food, say = say, trusts = squadTrusts(player) })
+            if handled then
+                return
+            end
         end
 
         local any = false
@@ -3327,13 +3570,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             elseif trust:getMainLvl() < (food.minLevel or 10) then
                 say(player, string.format('%s: no food yet (mates eat from level %d)', trust:getPacketName(), food.minLevel or 10))
             else
-                local meal = chooseFood(trust:getMainJob(), trust:getMainLvl())
+                local meal = (food.meals and food.meals.chosen(trust, food)) or chooseFood(trust:getMainJob(), trust:getMainLvl())
                 say(player, string.format('%s: nothing right now, eats %s when the next fight starts', trust:getPacketName(), meal and meal.name or '(no food for this job)'))
             end
         end
 
         if not any then
             say(player, 'None of your squad mates are out.')
+        end
+
+        if food.meals then
+            say(player, 'Choose a mate\'s food: !squad food <slot>')
         end
 
         return
@@ -3449,7 +3696,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         end
 
         -- (servermenu 1.10) engage timing, and per mate: opt|<slot>|<size 0-3>|<ws TP, 0 = chain>|<chosen WS or ->|<range 0-3>|<usable WS, comma list or ->
-        say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') == 1 and 1 or 0))
+        say(player, string.format('squadpanel:engage|%d', player:getCharVar('TrustEngageType') ~= 2 and 1 or 0))
         say(player, string.format('squadpanel:auto|%d', player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 1 or 0))
         -- (servermenu 1.11) adv|<follow 0 normal, 1 close, 2 far>|<camp rest 1 on>|<call order, slots, or ->  and  delay|<slot>|<seconds>
         local orderCode = player:getCharVar('SQUAD_ORDER')
@@ -3584,9 +3831,9 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 say(player, string.format('squadsheet:stat|%s|%d', entry[1], read('getStat', entry[2])))
             end
 
-            -- Accuracy, evasion and the ranged pair are the numbers the game works its hit rates out from;
-            -- attack and defense are only stored as modifiers.
-            local combat = { { 'Attack', 'getMod', xi.mod.ATT }, { 'Accuracy', 'getACC' }, { 'Defense', 'getMod', xi.mod.DEF },
+            -- The numbers the game works hit rates and damage out from. Attack and defense are the totals (getStat, the
+            -- same CBattleEntity::ATT/DEF combat uses): a squad mate has no trust base rating in its ATT/DEF modifiers.
+            local combat = { { 'Attack', 'getStat', xi.mod.ATT }, { 'Accuracy', 'getACC' }, { 'Defense', 'getStat', xi.mod.DEF },
                              { 'Evasion', 'getEVA' }, { 'Ranged attack', 'getRATT' }, { 'Ranged accuracy', 'getRACC' } }
             for _, entry in ipairs(combat) do
                 say(player, string.format('squadsheet:combat|%s|%d', entry[1], read(entry[2], entry[3])))
@@ -3754,15 +4001,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             if string.lower(arg2 or '') == 'reset' then
                 player:setCharVar('SQUAD_PULL_LOW', 0)
                 player:setCharVar('SQUAD_PULL_HIGH', 0)
-                say(player, string.format('Your puller is back to monsters from %d below to %d above your level.', -CAMP_LEVELS[1], CAMP_LEVELS[2]))
+                say(player, string.format('Your puller is back to monsters from %d below to %d above the lowest level in your party: %s.',
+                    -CAMP_LEVELS[1], CAMP_LEVELS[2], squadCampWindowText(player)))
             elseif low and high and low >= -30 and high <= 30 and low <= high then
                 player:setCharVar('SQUAD_PULL_LOW', math.floor(low) + 100)
                 player:setCharVar('SQUAD_PULL_HIGH', math.floor(high) + 100)
-                say(player, string.format('Your puller now goes for monsters from level %+d to %+d against yours (now %d-%d).',
-                    math.floor(low), math.floor(high), math.max(1, player:getMainLvl() + math.floor(low)), player:getMainLvl() + math.floor(high)))
+                say(player, string.format('Your puller now goes for monsters from %+d to %+d against the lowest level in your party: %s.',
+                    math.floor(low), math.floor(high), squadCampWindowText(player, math.floor(low), math.floor(high))))
             else
                 local l, h = squadCampLevels(player)
-                say(player, string.format('Pull levels: %+d to %+d against yours. Change: !squad camp levels <low> <high> (e.g. -10 0, from -30 to +10), or reset.', l, h))
+                say(player, string.format('Pull levels: %+d to %+d against the lowest level in your party, now %s. Change: !squad camp levels <low> <high> (e.g. -10 0, from -30 to +10), or reset.',
+                    l, h, squadCampWindowText(player)))
             end
         elseif what == 'rest' then
             -- mates sit and rest at camp while the pull is out (char var SQUAD_CAMP_NOREST: 0 = on, the default; 1 = off)
@@ -3773,6 +4022,17 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
             say(player, player:getCharVar('SQUAD_CAMP_NOREST') == 1 and 'At camp your mates stay standing between fights (!squad camp rest on to change).'
                 or 'At camp your mates sit and rest between fights while the pull is out (!squad camp rest off to change).')
+        elseif what == 'wait' then
+            -- (2026-11-22) the puller keeps pulling while you rest or are low on MP (char var SQUAD_CAMP_WAIT 0, the
+            -- default); on = the old rule: it waits for you
+            local on = string.lower(arg2 or '')
+            if on == 'on' or on == 'off' then
+                player:setCharVar('SQUAD_CAMP_WAIT', on == 'on' and 1 or 0)
+            end
+
+            say(player, player:getCharVar('SQUAD_CAMP_WAIT') == 1
+                and 'The puller waits while you rest or are low on HP or MP (!squad camp wait off to change).'
+                or 'The puller keeps pulling while you rest; it waits only while you are on your feet and hurt, or a mate needs HP or MP (!squad camp wait on to change).')
         elseif what == 'pause' or what == 'resume' or what == 'start' then
             local c = camps[charId]
             if c then
@@ -3828,8 +4088,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             end
 
             c.puller, c.pullerBot, c.state, c.nextPull = 0, pullBot:getID(), 'idle', os.time() + 2
-            say(player, string.format('%s pulls. Monsters level %d-%d within %d yalms of camp, one at a time.',
-                pullBot:getName(), math.max(1, player:getMainLvl() + CAMP_LEVELS[1]), player:getMainLvl() + CAMP_LEVELS[2], campRange(player)))
+            say(player, string.format('%s pulls. Monsters %s within %d yalms of camp, one at a time.',
+                pullBot:getName(), squadCampWindowText(player), campRange(player)))
             return
         elseif who ~= 'me' and who ~= 'off' then
             mate = findMate(squad, tonumber(who) or -1)
@@ -3869,8 +4129,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         end
 
         c.puller, c.nextPull = mate.id, os.time() + 2
-        say(player, string.format('%s pulls. Monsters level %d-%d within %d yalms of camp, one at a time when everyone is ready.',
-            mate.name, math.max(1, player:getMainLvl() + CAMP_LEVELS[1]), player:getMainLvl() + CAMP_LEVELS[2], campRange(player)))
+        say(player, string.format('%s pulls. Monsters %s within %d yalms of camp, one at a time when everyone is ready.',
+            mate.name, squadCampWindowText(player), campRange(player)))
         return
     end
 
@@ -4254,8 +4514,27 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         elseif wanted == 'off' or wanted == '0' then
             player:setCharVar('SQUAD_AUTOEQUIP', 0)
             say(player, 'Auto-equip is off: your squad keeps what it wears now, and you choose gear by hand.')
+        elseif wanted == 'now' or wanted == 'once' or wanted == 'best' then
+            -- (2026-11-22, FalconX51) one press: the best given gear right now, for every mate or one slot. Auto-equip
+            -- itself stays as it is, so with it off the pieces are yours to change by hand afterwards.
+            local only = tonumber(arg2)
+            local total, mates = 0, 0
+            for _, m in ipairs(GetSquad(player:getID()) or {}) do
+                if only == nil or m.slot == only then
+                    mates = mates + 1
+                    local ok, n = pcall(squadAutoEquip, player, m)
+                    total = total + ((ok and n) or 0)
+                end
+            end
+
+            if mates == 0 then
+                say(player, string.format('You have no squad mate in slot %s.', tostring(arg2)))
+            else
+                say(player, string.format('Best gear put on %s: %d piece(s) changed. Apply now (or dismiss and call) to see it. Auto-equip stays %s.',
+                    only and ('slot ' .. only) or 'every mate', total, player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off, so you can still change any piece by hand'))
+            end
         else
-            say(player, '!squad autoequip on | off   - mates wear the best given gear for their job and level. Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
+            say(player, '!squad autoequip on | off | now [slot]   - mates wear the best given gear for their job and level (now = once, right away). Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
         end
 
         return
@@ -4287,18 +4566,37 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     end
 
     if action == 'engage' then
-        -- When mates join a fight. The game reads the char var TrustEngageType (trust_controller.cpp): 0 = retail (you
-        -- engage AND swing), 1 = as soon as you engage. Set here directly; the core !trustengage command is GM-only.
+        -- When mates join a fight. The game reads the char var TrustEngageType (trust_controller.cpp). (2026-11-22, the
+        -- user: "when you press attack it will send your squad to attack even if you don't hit them, so mages can do
+        -- this apart") for squad mates 0 (nothing set) and 1 = as soon as you engage; 2 = retail: you engage AND swing.
         local wanted = string.lower(arg1 or '')
         if wanted == 'first' or wanted == 'on' or wanted == '1' then
             player:setCharVar('TrustEngageType', 1)
             say(player, 'Your squad now joins the fight as soon as you engage (draw your weapon), without waiting for your first swing.')
         elseif wanted == 'normal' or wanted == 'off' or wanted == '0' then
-            player:setCharVar('TrustEngageType', 0)
+            player:setCharVar('TrustEngageType', 2)
             say(player, 'Your squad now joins the fight after your first swing, like retail trusts.')
         else
-            local now = player:getCharVar('TrustEngageType') == 1 and 'first (as soon as you engage)' or 'normal (after your first swing)'
+            local now = player:getCharVar('TrustEngageType') ~= 2 and 'first (as soon as you engage)' or 'normal (after your first swing)'
             say(player, '!squad engage first | normal   - when your mates join a fight. Now: ' .. now)
+        end
+
+        return
+    end
+
+    if action == 'attack' or action == 'stop' then
+        -- (2026-11-22, Hasuko: "I'm a WHM. I shouldn't have to pull my weapon. I should be as far back as possible
+        -- and/or resting during pulls". Yenkei: "I was hoping to get a squad attack button too") !squad attack sends the
+        -- squad at the monster you have targeted, without you engaging; !squad stop calls it back. The order is three
+        -- local vars on the player that trust_controller.cpp reads (OrderedTarget) and drops by itself when the monster
+        -- is dead or gone. Bot players in your party get the same order through their own party orders.
+        local wanted = string.lower(arg1 or '')
+        local stop = action == 'stop' or wanted == 'off' or wanted == 'stop'
+        local result = xi.squad.attackOrder(player, stop)
+        if xi.bots and type(xi.bots.partyOrder) == 'function' then
+            if stop or result == true then
+                pcall(xi.bots.partyOrder, player, stop and 'stop' or 'attack')
+            end
         end
 
         return
@@ -4710,11 +5008,20 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             return
         end
 
+        -- (role clarity) the Role is kept per mate across jobs: say so once, here, when the main job really changes
+        -- (squad_jobs.lua J.roleKeptHint; nothing is changed by it)
+        local okKept, kept = pcall(function()
+            return require('modules/custom/lua/squad_jobs').roleKeptHint(mate,
+                (decodeBehavior(player:getCharVar('SQUAD_AI_' .. mate.id))), mate.mjob, job, jobNames[job])
+        end)
         mate.mjob = job
         if mate.sjob == job then
             mate.sjob = 0
         end
         chatSend('UPDATE', mate.name, 'job', jobNames[job])
+        if okKept and kept then
+            say(player, kept)
+        end
     elseif action == 'sub' then
         if arg2 ~= nil and string.lower(arg2) == 'none' then
             mate.sjob = 0
@@ -5866,14 +6173,15 @@ jobs[jobIds.DNC] =
 -- Its role decides: damage = Dark Arts (storm, helix, magic bursts and nukes); any other role = Light Arts (cures, -na
 -- spells, Regen on the tank, Protect and Shell), with a nuke now and then when it has MP to spare (not as a healer).
 -- Sublimation 35 charges while MP is high and is used when MP runs low. As a sub job: Arts and cures only.
-local function scholarDark()
+-- (merge 2026-11-23: a field, not a local: the main chunk is at LuaJIT's 200 locals)
+function xi.squad.scholarDark()
     return activeBehavior ~= nil and activeBehavior.role == 'damage'
 end
 
 jobs[jobIds.SCH] =
 {
     ja = function(mob, isSub)
-        if scholarDark() then
+        if xi.squad.scholarDark() then
             addJA(mob, 10, 'DARK_ARTS', ai.t.SELF, ai.c.NOT_STATUS, 'DARK_ARTS')
         else
             addJA(mob, 10, 'LIGHT_ARTS', ai.t.SELF, ai.c.NOT_STATUS, 'LIGHT_ARTS')
@@ -5887,7 +6195,7 @@ jobs[jobIds.SCH] =
         end
     end,
     magic = function(mob, isSub)
-        local dark = scholarDark()
+        local dark = xi.squad.scholarDark()
 
         addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, dark and 35 or 75), family('CURE'))
         if isSub then
@@ -6005,6 +6313,18 @@ local function ruleCondition(spec, isSub)
         return { id, packed }
     end
 
+    -- (Bard song tiers) STATUS / NOT_STATUS { effect = 'MARCH', tier = 2 } -> effect id + tier * 65536 (R.effectArg)
+    if (spec[1] == 'STATUS' or spec[1] == 'NOT_STATUS') and type(spec[2]) == 'table' then
+        local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+        local packed = okR and type(R) == 'table' and R.tierReady and R.tierReady() and R.effectArg and R.effectArg(spec[2]) or nil
+        if packed == nil then
+            print(string.format('[squad] %s with a song tier needs a song effect, tier 1-7 and the updated map server - rule skipped', spec[1]))
+            return nil
+        end
+
+        return { id, packed }
+    end
+
     return cond(id, ruleArg(spec[2], isSub))
 end
 
@@ -6073,7 +6393,22 @@ local function applyRules(mob, rules, isSub)
                     condition = both(condition, ruleCondition(rule.cond2, isSub))
                 end
 
-                addGambit(mob, target, condition, ruleAction(rule.action), rule.retry)
+                -- (Gambits 0.3.3, Bard role targeting) include / exclude roles ride in the target argument's high byte
+                if rule.include ~= nil or rule.exclude ~= nil then
+                    local okR, R = pcall(require, 'modules/custom/lua/squad_rulesets')
+                    local packed = okR and type(R) == 'table' and R.roleFilterReady and R.roleFilterReady() and R.roleFilterProblem
+                        and R.roleFilterProblem(rule) == nil and R.roleMasks(rule, target) or nil
+                    if packed == nil then
+                        print(string.format('[squad] the role filter of a %s rule needs valid roles and the updated map server - rule skipped',
+                            tostring(rule.target)))
+                    end
+
+                    target = packed
+                end
+
+                if target ~= nil then
+                    addGambit(mob, target, condition, ruleAction(rule.action), rule.retry)
+                end
             end
         end
     end
@@ -6462,6 +6797,10 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
 
     -- (spells from scrolls) a squad Blue Mage out with you may learn blue magic from what the party defeats
     if not (BotIsBot and BotIsBot(player:getID())) then
+        if type(xi.squad.shell) == 'table' then
+            pcall(xi.squad.shell.onGameIn, player, zoning) -- (mates on your linkshell: squad_shell.lua)
+        end
+
         player:addListener('DEFEATED_MOB', 'SQUAD_BLU_LEARN', function(mob)
             if mob == nil or not squadScrollsOn() or not SquadBlueSpellsOf then
                 return

@@ -74,4 +74,8 @@ struct SquadSpec
 void LoadTrustList();
 auto SpawnTrust(CCharEntity* PMaster, uint32 TrustID, const SquadSpec* spec = nullptr) -> CTrustEntity*;
 
+// (XI: Forever Offline) a squad mate's skills from the player skill table plus its gear's skill modifiers; squad.cpp
+// calls it again after the outfit is applied. Does nothing for an ordinary trust.
+void BuildSquadSkills(CTrustEntity* PTrust);
+
 }; // namespace trustutils

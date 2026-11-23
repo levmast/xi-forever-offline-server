@@ -35,6 +35,7 @@
 
 #include "map/ability.h"
 #include "map/ai/ai_container.h"
+#include "map/autotranslate.h"
 #include "map/ai/states/magic_state.h"
 #include "map/entities/char_entity.h"
 #include "map/lua/lua_base_entity.h"
@@ -663,6 +664,46 @@ auto make(uint32 fromAcc, const std::string& fromName, uint32 toAcc, uint8 type,
     put(h, 64, 1, 2);                                                        // ContentsId: FINAL FANTASY XI
     put(h, 66, 0x0002 | (summaryOf.size() > 15 ? 0x1000 : 0), 2);           // Language 1, title longer than its summary
     return { base64(h), data };
+}
+
+// (2026-11-22, Sunie: "bots don't recognize auto-translate text") Chat a player types to the bots (tells, party,
+// linkshell, shouts) with auto-translate phrases in it arrives as raw bytes (FD 02 02 xx xx FD), which the bots and
+// their chat AI read as garbage. The game's own table (autotranslate.cpp, the one squad.cpp uses for party chat) turns
+// each phrase into "{ words }"; the braces are taken off, so what reaches Lua is the line as plain text.
+auto plainChat(const std::string& raw) -> std::string
+{
+    if (raw.find('\xFD') == std::string::npos)
+    {
+        return raw;
+    }
+
+    const std::string text = autotranslate::replaceBytes(raw);
+    std::string       out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        if (text.compare(i, 2, "{ ") == 0)
+        {
+            // a phrase right after a word or another phrase: keep them apart
+            if (!out.empty() && out.back() != ' ')
+            {
+                out += ' ';
+            }
+
+            ++i;
+            continue;
+        }
+
+        if (text.compare(i, 2, " }") == 0)
+        {
+            ++i;
+            continue;
+        }
+
+        out += text[i];
+    }
+
+    return out;
 }
 
 // the text of a stored message (after the title), printable letters only; auto-translate phrases are left out
@@ -2478,7 +2519,7 @@ class BotsModule : public CPPModule
                     {
                         auto info    = ::lua.create_table();
                         info["from"] = std::string(PChar->getName());
-                        info["text"] = text;
+                        info["text"] = polmail::plainChat(text);
                         callLua("onTell", PBot, info);
                     }
 
@@ -2581,7 +2622,7 @@ class BotsModule : public CPPModule
 
         const auto length = std::min<std::size_t>((chat->header.size * 4u) > 6u ? (chat->header.size * 4u) - 6u : 0u, sizeof(chat->Str));
         std::string text(reinterpret_cast<const char*>(chat->Str), strnlen(reinterpret_cast<const char*>(chat->Str), length));
-        callLua(shout ? "playerShout" : (party ? "partyOrder" : "lsChat"), PChar, sol::make_object(::lua, text));
+        callLua(shout ? "playerShout" : (party ? "partyOrder" : "lsChat"), PChar, sol::make_object(::lua, polmail::plainChat(text)));
         return false; // the message still goes to party / linkshell chat as normal
     }
 

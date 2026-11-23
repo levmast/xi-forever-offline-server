@@ -1858,6 +1858,20 @@ auto CLuaBaseEntity::isTrust() const -> bool
 }
 
 /************************************************************************
+ *  Function: isSquadMate()
+ *  Purpose : Returns true if entity is a squad mate (a trust with a squad record)
+ *  Example : if attacker:isPC() or attacker:isSquadMate() then
+ *  Notes   : XI: Forever Offline. Squad mates follow the player combat formulas;
+ *            ordinary trusts return false.
+ ************************************************************************/
+
+auto CLuaBaseEntity::isSquadMate() const -> bool
+{
+    const auto* PBattle = dynamic_cast<const CBattleEntity*>(m_PBaseEntity);
+    return PBattle != nullptr && PBattle->isSquadMate();
+}
+
+/************************************************************************
  *  Function: isFellow()
  *  Purpose : Returns true if entity is of the Fellow object type
  *  Example : if caster:isFellow() then
@@ -4427,6 +4441,18 @@ auto CLuaBaseEntity::getEquippedItem(uint8 slot) -> CItem*
         }
 
         return PChar->getEquip(static_cast<SLOTTYPE>(slot));
+    }
+
+    // XI: Forever Offline: a squad mate holds no inventory; its outfit is item ids. Give back the shared item
+    // template for what it wears (read only: shield size and absorption, weapon type) so player combat code
+    // (shield block, parry, guard) works the same for it.
+    if (auto* PTrust = dynamic_cast<CTrustEntity*>(m_PBaseEntity); PTrust != nullptr && PTrust->isSquadMate() && slot < 16)
+    {
+        if (const uint16 itemId = PTrust->squadEquip(slot); itemId != 0)
+        {
+            // the shared template is never changed through this: the callers only read it
+            return const_cast<CItemEquipment*>(xi::items::lookup<CItemEquipment>(itemId));
+        }
     }
 
     return nullptr;
@@ -11275,6 +11301,21 @@ auto CLuaBaseEntity::getSkillRank(uint8 rankID) -> uint8
     {
         return PChar->RealSkills.rank[rankID];
     }
+
+    // XI: Forever Offline: a squad mate's rank, as charutils::BuildingCharSkillsTable sets a player's:
+    // the main job's rank, else the sub job's
+    if (const auto* PBattle = dynamic_cast<const CBattleEntity*>(m_PBaseEntity); PBattle != nullptr && PBattle->isSquadMate() && rankID < MAX_SKILLTYPE)
+    {
+        const auto  skill = static_cast<xi::SkillType>(rankID);
+        const uint8 rank  = battleutils::GetSkillRank(skill, PBattle->GetMJob());
+        if (rank != 0 || PBattle->GetSLevel() == 0)
+        {
+            return rank;
+        }
+
+        return battleutils::GetSkillRank(skill, PBattle->GetSJob());
+    }
+
     return 0;
 }
 
@@ -13398,6 +13439,34 @@ void CLuaBaseEntity::resetRecast(uint8 rType, uint16 recastID)
 
         PChar->pushPacket<GP_SERV_COMMAND_CLISTATUS2>(PChar);
         PChar->pushPacket<GP_SERV_COMMAND_ABIL_RECAST>(PChar);
+        return;
+    }
+
+    // XI: Forever Offline (squad audit N5): a squad mate keeps an ability's recast twice (CBattleEntity::OnAbility): by
+    // ability id and in the shared group key. Resetting a recast id (Double-Up 11 resets PHANTOM_ROLL) clears the group
+    // and the ability-id recasts of every ability in that group, so the mate may use any of them again, as a player.
+    auto* PBattle = dynamic_cast<CBattleEntity*>(m_PBaseEntity);
+    if (PBattle != nullptr && PBattle->isSquadMate() && static_cast<xi::RecastType>(rType) == xi::RecastType::Ability && PBattle->PRecastContainer != nullptr)
+    {
+        if (RecastList_t* PList = PBattle->PRecastContainer->GetRecastList(xi::RecastType::Ability))
+        {
+            for (auto& recast : *PList)
+            {
+                const auto key = static_cast<uint16>(recast.ID);
+                if (key == (0x8000 | (recastID & 0x7FFF)))
+                {
+                    recast.RecastTime = 0s;
+                }
+                else if (key < 0x8000)
+                {
+                    const auto* PAbility = ability::GetAbility(key);
+                    if (PAbility != nullptr && static_cast<uint16>(PAbility->getRecastId()) == recastID)
+                    {
+                        recast.RecastTime = 0s;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -15899,6 +15968,17 @@ auto CLuaBaseEntity::addDamageFromMultipliers(uint32 damage, PHYSICAL_ATTACK_TYP
         CItemWeapon* PWeapon = dynamic_cast<CItemWeapon*>(PChar->getEquip((SLOTTYPE)weaponSlot));
 
         return attackutils::CheckForDamageMultiplier(PChar, PWeapon, damage, attackType, weaponSlot, allowProc);
+    }
+
+    // XI: Forever Offline (squad audit N6): a squad mate, as in attack.cpp: the item it wears in that slot (its stand-in
+    // weapon carries no item mods), else the stand-in for mod-only effects
+    if (auto* PTrust = dynamic_cast<CTrustEntity*>(m_PBaseEntity); PTrust != nullptr && PTrust->isSquadMate() && weaponSlot < 16)
+    {
+        const uint16 itemId  = PTrust->squadEquip(weaponSlot);
+        auto*        PWorn   = itemId != 0 ? const_cast<CItemWeapon*>(xi::items::lookup<CItemWeapon>(itemId)) : nullptr;
+        auto*        PWeapon = PWorn != nullptr ? PWorn : (weaponSlot <= SLOT_AMMO ? dynamic_cast<CItemWeapon*>(PTrust->m_Weapons[weaponSlot]) : nullptr);
+
+        return attackutils::CheckForDamageMultiplier(PTrust, PWeapon, damage, attackType, weaponSlot, allowProc);
     }
 
     return damage;
@@ -20812,6 +20892,7 @@ void CLuaBaseEntity::Register()
     SOL_REGISTER("isMob", CLuaBaseEntity::isMob);
     SOL_REGISTER("isPet", CLuaBaseEntity::isPet);
     SOL_REGISTER("isTrust", CLuaBaseEntity::isTrust);
+    SOL_REGISTER("isSquadMate", CLuaBaseEntity::isSquadMate);
     SOL_REGISTER("isFellow", CLuaBaseEntity::isFellow);
     SOL_REGISTER("isAlly", CLuaBaseEntity::isAlly);
 

@@ -10,8 +10,8 @@ xi.combat.magicHitRate = xi.combat.magicHitRate or {}
 -- Calculate Target Resistance Rank
 -----------------------------------
 local function calculateTargetResistanceRank(actor, target, params)
-    -- Early return: Players don't use resistance ranks.
-    if target:isPC() then
+    -- Early return: Players don't use resistance ranks. (XI: Forever Offline) neither do squad mates.
+    if target:isPC() or target:isSquadMate() then
         return 0
     end
 
@@ -55,9 +55,15 @@ local function magicAccuracyFromSkill(actor, params)
         end
 
         if params.skillType == xi.skill.SINGING then
-            if actor:isPC() then
+            if actor:isPC() or actor:isSquadMate() then
                 -- String instruments sacrifice accuracy and amplify the AoE in exchange.
+                -- (XI: Forever Offline) a squad mate's instrument is read from its outfit (see enhancing_song.lua)
                 local rangedSkill = actor:getWeaponSkillType(xi.slot.RANGED)
+                if actor:isSquadMate() then
+                    local rangedItem = actor:getEquippedItem(xi.slot.RANGED)
+                    rangedSkill = rangedItem and rangedItem:getSkillType() or xi.skill.NONE
+                end
+
                 if rangedSkill == xi.skill.WIND_INSTRUMENT then
                     magicAcc = magicAcc + math.floor(actor:getSkillLevel(rangedSkill) / 2)
                 end
@@ -469,8 +475,10 @@ local function calculateMagicHitRate(actor, target, params)
     end
 
     -- Level correction. Target gets a bonus the higher the level if it's a mob. Never a penalty.
+    -- (XI: Forever Offline) a squad mate as the target is treated as a player
     if
         not target:isPC() and
+        not target:isSquadMate() and
         xi.data.levelCorrection.isLevelCorrectedZone(actor)
     then
         magicHitRate = magicHitRate - utils.clamp(target:getMainLvl() - actor:getMainLvl(), 0, 100) * 4
@@ -489,8 +497,8 @@ local function calculateResistanceFactor(actor, target, params)
     -- Calculate max allowed resist tier.
     local maxResistTier = 3
 
-    -- Players: Affected by element shown in equipment screen.
-    if target:isPC() then
+    -- Players: Affected by element shown in equipment screen. (XI: Forever Offline) squad mates too.
+    if target:isPC() or target:isSquadMate() then
         local playerElementalEvasion = target:getMod(xi.data.element.getElementalMEVAModifier(params.magicalElement)) or 0
 
         if playerElementalEvasion < 0 then

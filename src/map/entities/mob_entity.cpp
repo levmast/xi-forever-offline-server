@@ -92,6 +92,20 @@ namespace
 
 constexpr timer::duration SPECIAL_DROP_COOLDOWN = 5min; // 5 minutes between special drops
 
+// (XI: Forever Offline, 2026-11-22, delukard) RULES > Loot and gil > "Wait between seals": main.SEAL_DROP_MINUTES, the
+// minutes a party waits after a seal (or another special drop) before the next one can drop. 5 = the base's rule,
+// 0 = no wait. Anything below 0 counts as 5.
+auto specialDropCooldown() -> timer::duration
+{
+    const float minutes = settings::get<float>("main.SEAL_DROP_MINUTES");
+    if (minutes < 0.0f)
+    {
+        return SPECIAL_DROP_COOLDOWN;
+    }
+
+    return std::chrono::seconds(static_cast<int64>(std::min(minutes, 60.0f) * 60.0f));
+}
+
 } // namespace
 
 CMobEntity::CMobEntity()
@@ -1105,7 +1119,7 @@ void CMobEntity::DropItems(CCharEntity* PChar)
 
         if (!PParty || !PChar->PTreasurePool)
         {
-            PChar->PRecastContainer->AddLootRecast(id, SPECIAL_DROP_COOLDOWN);
+            PChar->PRecastContainer->AddLootRecast(id, specialDropCooldown());
             return;
         }
 
@@ -1113,7 +1127,7 @@ void CMobEntity::DropItems(CCharEntity* PChar)
         {
             if (member->PParty == PParty)
             {
-                member->PRecastContainer->AddLootRecast(id, SPECIAL_DROP_COOLDOWN);
+                member->PRecastContainer->AddLootRecast(id, specialDropCooldown());
             }
         }
     };

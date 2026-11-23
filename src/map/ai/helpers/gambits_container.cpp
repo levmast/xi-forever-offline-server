@@ -50,6 +50,27 @@ namespace gambits
 
 namespace
 {
+// XI: Forever Offline (Bard song tiers): STATUS / NOT_STATUS. condition_arg = status effect id (low 16 bits) | tier << 16.
+// Tier 0 = the effect at any tier (the argument every gambit had before, unchanged). A tier names one song of a song type:
+// all Marches are the effect MARCH, Advancing March tier 1, Victory March tier 2 (enhancing_song.lua songPTable; the tier
+// ApplyBardEffect keeps them apart by). Squad Rule Sets may give a tier only to song effects (squad_rulesets.lua).
+auto HasStatusEffectTier(const CBattleEntity* target, uint32 arg) -> bool
+{
+    const auto effect = static_cast<xi::StatusEffect>(arg & 0xFFFF);
+    const auto tier   = static_cast<uint16>(arg >> 16);
+    if (tier == 0)
+    {
+        return target->StatusEffectContainer->HasStatusEffect(effect);
+    }
+
+    bool found = false;
+    target->StatusEffectContainer->ForEachEffect([&](CStatusEffect& PEffect)
+                                                 {
+                                                     found = found || (PEffect.GetStatusID() == effect && PEffect.GetTier() == tier && !PEffect.isDeleted());
+                                                 });
+    return found;
+}
+
 // XI: Forever Offline (job expansion): a skillchain effect's resonance. Before a skillchain forms (tier 0, an opening)
 // the power packs the opening weapon skill's three properties, 4 bits each; once a skillchain has formed (tier > 0) the
 // power is that skillchain's type (battleutils::GetSkillChainEffect). Reading a formed chain as three nibbles split
@@ -87,6 +108,25 @@ constexpr auto MagicBurstMargin   = std::chrono::milliseconds(500); // the spell
 auto squadRole(CBattleEntity* PMember) -> uint32
 {
     return PMember != nullptr ? PMember->GetLocalVar("SQUAD_ROLE") : 0;
+}
+
+// XI: Forever Offline (Gambits 0.3.3, Bard role targeting): the role bit of a role target (Gambit_t role_include /
+// role_exclude), 0 for any other target
+auto RoleBit(G_TARGET target) -> uint8
+{
+    switch (target)
+    {
+        case G_TARGET::TANK:
+            return 1;
+        case G_TARGET::MELEE:
+            return 2;
+        case G_TARGET::CASTER:
+            return 4;
+        case G_TARGET::RANGED:
+            return 8;
+        default:
+            return 0;
+    }
 }
 
 auto nowSeconds() -> uint32
@@ -174,6 +214,23 @@ auto CGambitsContainer::AddGambit(const Gambit_t& gambit) -> std::string
     // Make a modifiable copy, assign a new identifier and store it
     Gambit_t stored   = gambit;
     stored.identifier = NewGambitIdentifier(stored);
+
+    // XI: Forever Offline (Gambits 0.3.3, Bard role targeting): a role target may carry role filters in the target
+    // argument's high byte (include bits 8-11, exclude bits 12-15). Only for TANK / MELEE / CASTER / RANGED; on any other
+    // target the high byte is refused (the rule is not added) instead of being read as another target.
+    const auto raw = static_cast<uint16>(stored.target_selector);
+    if (raw > 0xFF)
+    {
+        const auto base = static_cast<G_TARGET>(raw & 0xFF);
+        if (base != G_TARGET::TANK && base != G_TARGET::MELEE && base != G_TARGET::CASTER && base != G_TARGET::RANGED)
+        {
+            return "";
+        }
+
+        stored.target_selector = base;
+        stored.role_include    = static_cast<uint8>((raw >> 8) & 0x0F);
+        stored.role_exclude    = static_cast<uint8>((raw >> 12) & 0x0F);
+    }
     gambits.emplace_back(std::move(stored));
     return gambits.back().identifier;
 }
@@ -325,6 +382,54 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                     });
                 // clang-format on
             }
+        }
+        else if (RoleBit(targetType) != 0 && (gambit.role_include != 0 || gambit.role_exclude != 0))
+        {
+            // XI: Forever Offline (Gambits 0.3.3, Bard role targeting): a member qualifies when it has ANY of the included
+            // roles (the target's own role and role_include) and NONE of the excluded ones; exclusion wins. Each member is
+            // looked at once, so one that matches several included roles is never a target twice. The roles are exactly
+            // the single-role targets' below (a party role set with !squad partyrole decides; else the main job).
+            auto inRole = [this](CBattleEntity* PMember, uint8 bit) -> bool
+            {
+                const auto role = squadRole(PMember);
+                const auto job  = PMember->GetMJob();
+                switch (bit)
+                {
+                    case 1:
+                        return role == 1 || (role == 0 && (job == xi::Job::PLD || job == xi::Job::RUN));
+                    case 2:
+                        return role == 2 || (role == 0 && melee_jobs.contains(job));
+                    case 4:
+                        return role == 3 || (role == 0 && caster_jobs.contains(job));
+                    case 8:
+                        return role == 4 || (role == 0 && (job == xi::Job::RNG || job == xi::Job::COR));
+                    default:
+                        return false;
+                }
+            };
+            auto anyRole = [&inRole](CBattleEntity* PMember, uint8 bits) -> bool
+            {
+                for (uint8 bit = 1; bit <= 8; bit = static_cast<uint8>(bit << 1))
+                {
+                    if ((bits & bit) != 0 && inRole(PMember, bit))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            };
+
+            const auto include = static_cast<uint8>(RoleBit(targetType) | gambit.role_include);
+            // clang-format off
+                static_cast<CCharEntity*>(POwner->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
+                {
+                    if (isValidMember(target, PMember) && anyRole(PMember, include) && !anyRole(PMember, gambit.role_exclude))
+                    {
+                        potentialTargets.push_back(PMember);
+                    }
+                });
+            // clang-format on
         }
         else if (targetType == G_TARGET::TANK)
         {
@@ -1143,12 +1248,12 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
             }
             case G_CONDITION::STATUS:
             {
-                predicateResults.push_back(triggerTarget->StatusEffectContainer->HasStatusEffect(static_cast<xi::StatusEffect>(predicate.condition_arg)));
+                predicateResults.push_back(HasStatusEffectTier(triggerTarget, predicate.condition_arg));
                 continue;
             }
             case G_CONDITION::NOT_STATUS:
             {
-                predicateResults.push_back(!triggerTarget->StatusEffectContainer->HasStatusEffect(static_cast<xi::StatusEffect>(predicate.condition_arg)));
+                predicateResults.push_back(!HasStatusEffectTier(triggerTarget, predicate.condition_arg));
                 continue;
             }
             case G_CONDITION::TIMER:
@@ -1183,12 +1288,14 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
             }
             case G_CONDITION::JA_ON_COOLDOWN:
             {
-                // XI: Forever Offline: true while the mate's own recast of that ability is running. Before, this tested the
-                // ability's fixed recast time (always true for any ability with a recast) and crashed on an unknown id.
-                // Trust recasts are kept by ability id (CBattleEntity::OnAbility), the same key CTrustController::Ability checks.
+                // XI: Forever Offline: true while the mate cannot use that ability yet because of its recast. Before, this
+                // tested the ability's fixed recast time (always true for any ability with a recast) and crashed on an
+                // unknown id. (squad audit N5) It asks IsAbilityOnRecast, the check CTrustController::Ability uses: the
+                // ability's own recast for every trust and, for a squad mate, also a player's shared recast group and
+                // charges (one Phantom Roll puts every roll on cooldown; Quick Draw only with no charge left).
                 const auto* PAbility = predicate.condition_arg != 0 ? ability::GetAbility(static_cast<ABILITY>(predicate.condition_arg)) : nullptr;
                 predicateResults.push_back(PAbility != nullptr && POwner->PRecastContainer != nullptr &&
-                                           POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(PAbility->getID()), 0s));
+                                           POwner->IsAbilityOnRecast(const_cast<CAbility*>(PAbility)));
                 continue;
             }
             case G_CONDITION::HAS_MP:

@@ -60,6 +60,7 @@ namespace
 void BuildTrustData(uint32 TrustID);
 auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec* spec) -> CTrustEntity*;
 void LoadTrustStatsAndSkills(CTrustEntity* PTrust);
+void BuildSquadSkillsImpl(CTrustEntity* PTrust);
 
 // List of trusts that are essentially walking GEO bubbles that should not be targetable
 std::unordered_set<SpellID> passiveTrustIDs = {
@@ -209,6 +210,11 @@ auto trustutils::SpawnTrust(CCharEntity* PMaster, uint32 TrustID, const SquadSpe
     PMaster->PParty->ReloadParty();
 
     return PTrust;
+}
+
+void trustutils::BuildSquadSkills(CTrustEntity* PTrust)
+{
+    BuildSquadSkillsImpl(PTrust);
 }
 
 namespace
@@ -456,6 +462,11 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
         }
         PTrust->SetLocalVar("SQUAD_ID", spec->squadId);
         PTrust->SetLocalVar("SQUAD_SIZE", spec->bodySize);
+
+        // (XI: Forever Offline, squad audit N10) a squad mate is a player-like character: Humanoid, as CCharEntity sets
+        // for players, not its template's species (Gessho, the NIN template, is a Yagudo: Beastmen). The hitbox is
+        // still the template's (audit N9, a separate decision).
+        PTrust->m_EcoSystem = xi::Ecosystem::Humanoid;
     }
     else
     {
@@ -897,6 +908,52 @@ void RemoveTemplateMppFromSquadDragoon(CTrustEntity* PTrust)
     }
 }
 
+// (XI: Forever Offline, squad audit N1) a squad mate's skills, the way charutils::BuildingCharSkillsTable works them out
+// for a player who has capped every skill: the main job's cap at the main level when the main job has the skill, else
+// the sub job's cap at the sub level, plus the skill modifiers from gear and traits (mod = skill + 79). Combat skills
+// 1-12, ranged and defensive skills 25-31 (Archery to Parry) and magic skills 32-45 (Singing and the instruments too).
+// Automaton skills are left out: a squad Puppetmaster has no automaton. ALTER_EGO_SKILL_MULTIPLIER (1.0 by default)
+// still applies, as it did before. Called when the mate is loaded and again after its gear is applied (squad.cpp).
+void BuildSquadSkillsImpl(CTrustEntity* PTrust)
+{
+    if (PTrust == nullptr || !PTrust->isSquadMate())
+    {
+        return;
+    }
+
+    const xi::Job mJob = PTrust->GetMJob();
+    const xi::Job sJob = PTrust->GetSJob();
+    const uint8   mLvl = std::min<uint8>(PTrust->GetMLevel(), 99);
+    const uint8   sLvl = std::min<uint8>(PTrust->GetSLevel(), 99);
+
+    const float multiplier = settings::get<float>("map.ALTER_EGO_SKILL_MULTIPLIER");
+
+    for (int i = 1; i < 46; ++i)
+    {
+        // unused skill ids, and the automaton's own skills
+        if ((i >= 13 && i <= 24))
+        {
+            continue;
+        }
+
+        const auto   skill   = static_cast<xi::SkillType>(i);
+        const uint16 mainCap = battleutils::GetMaxSkill(skill, mJob, mLvl);
+        const uint16 subCap  = sLvl > 0 ? battleutils::GetMaxSkill(skill, sJob, sLvl) : 0;
+        const uint16 cap     = mainCap != 0 ? mainCap : subCap;
+
+        if (cap == 0)
+        {
+            PTrust->WorkingSkills.skill[i] = 0;
+            continue;
+        }
+
+        const int32 bonus = PTrust->getMod(static_cast<xi::Mod>(i + 79)); // can be negative (Shiva's Shotel)
+        const int32 value = static_cast<int32>(cap * multiplier) + bonus;
+
+        PTrust->WorkingSkills.skill[i] = static_cast<uint16>(std::clamp<int32>(value, 0, 0x7FFF));
+    }
+}
+
 void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
 {
     if (settings::get<uint8>("main.ENABLE_TRUST_ALTER_EGO_EXPO") > 0) // Alter Ego Expo HPP/MPP +50%, All Status Resistance +25%
@@ -1060,8 +1117,19 @@ void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
                 break;
         }
 
-        PTrust->health.maxhp = static_cast<int16>(grade::GetBaseHP(squadRaceGroup, grade::GetJobGrade(mJob, 0), mLvl, grade::GetJobGrade(sJob, 0), sLvl));
-        PTrust->health.maxmp = static_cast<int16>(grade::GetBaseMP(squadRaceGroup, grade::GetJobGrade(mJob, 1), mLvl, grade::GetJobGrade(sJob, 1), sLvl));
+        // (XI: Forever Offline, 2026-11-22, delukard) the "Your HP" / "Your MP" rules count for squad mates too
+        // (charutils::CalculateStats has the player's side). 1.0 is the era; missing or zero counts as 1.0.
+        const auto vitalRate = [](std::string_view key) -> float
+        {
+            const float rate = settings::get<float>(key);
+            return rate > 0.0f ? std::clamp(rate, 0.5f, 3.0f) : 1.0f;
+        };
+
+        const float squadBaseHP = static_cast<float>(grade::GetBaseHP(squadRaceGroup, grade::GetJobGrade(mJob, 0), mLvl, grade::GetJobGrade(sJob, 0), sLvl));
+        const float squadBaseMP = static_cast<float>(grade::GetBaseMP(squadRaceGroup, grade::GetJobGrade(mJob, 1), mLvl, grade::GetJobGrade(sJob, 1), sLvl));
+
+        PTrust->health.maxhp = static_cast<int16>(std::min(30000.0f, squadBaseHP * vitalRate("map.PLAYER_HP_MULTIPLIER")));
+        PTrust->health.maxmp = static_cast<int16>(std::min(30000.0f, squadBaseMP * vitalRate("map.PLAYER_MP_MULTIPLIER")));
     }
 
     PTrust->health.tp = 0;
@@ -1184,13 +1252,23 @@ void LoadTrustStatsAndSkills(CTrustEntity* PTrust)
         }
     }
 
-    PTrust->addModifier(xi::Mod::DEF, mobutils::GetBaseSkill(PTrust, PTrust->defRank));
-    PTrust->addModifier(xi::Mod::EVA, mobutils::GetBaseSkill(PTrust, PTrust->evaRank));
-    PTrust->addModifier(xi::Mod::ATT, mobutils::GetBaseSkill(PTrust, PTrust->attRank));
-    PTrust->addModifier(xi::Mod::ACC, mobutils::GetBaseSkill(PTrust, PTrust->accRank));
+    if (PTrust->isSquadMate())
+    {
+        // (XI: Forever Offline, squad audit N1) a squad mate's skills follow the player table, and its attack, accuracy,
+        // defense and evasion come from those skills through the player formulas (CBattleEntity::ATT, ACC, DEF, EVA,
+        // RATT, RACC), so it gets no trust base rating on top.
+        BuildSquadSkillsImpl(PTrust);
+    }
+    else
+    {
+        PTrust->addModifier(xi::Mod::DEF, mobutils::GetBaseSkill(PTrust, PTrust->defRank));
+        PTrust->addModifier(xi::Mod::EVA, mobutils::GetBaseSkill(PTrust, PTrust->evaRank));
+        PTrust->addModifier(xi::Mod::ATT, mobutils::GetBaseSkill(PTrust, PTrust->attRank));
+        PTrust->addModifier(xi::Mod::ACC, mobutils::GetBaseSkill(PTrust, PTrust->accRank));
 
-    PTrust->addModifier(xi::Mod::RATT, mobutils::GetBaseSkill(PTrust, PTrust->attRank));
-    PTrust->addModifier(xi::Mod::RACC, mobutils::GetBaseSkill(PTrust, PTrust->accRank));
+        PTrust->addModifier(xi::Mod::RATT, mobutils::GetBaseSkill(PTrust, PTrust->attRank));
+        PTrust->addModifier(xi::Mod::RACC, mobutils::GetBaseSkill(PTrust, PTrust->accRank));
+    }
 
     // Natural magic evasion
     PTrust->addModifier(xi::Mod::MEVA, mobutils::GetMagicEvasion(PTrust));

@@ -26,7 +26,10 @@
 #include "data/enums/mob_mod.h"
 #include "entities/automaton_entity.h"
 #include "entities/battle_entity.h"
+#include "entities/trust_entity.h"
 #include "items/item_weapon.h"
+#include "utils/attackutils.h"
+#include "utils/itemutils.h"
 #include "job_points.h"
 #include "monstrosity.h"
 #include "status_effect_container.h"
@@ -708,11 +711,12 @@ void CAttack::ProcessDamage()
     }
 
     // Apply "Double Attack" damage and "Triple Attack" damage mods
-    if (m_attackType == PHYSICAL_ATTACK_TYPE::DOUBLE && dynamic_cast<const CCharEntity*>(m_attacker) != nullptr)
+    // (XI: Forever Offline, squad audit N6) squad mates too, as players
+    if (m_attackType == PHYSICAL_ATTACK_TYPE::DOUBLE && m_attacker->usesPlayerCombatModel())
     {
         m_damage = std::floor<uint32>(m_damage * 1.0f + std::max(m_attacker->getMod(xi::Mod::DOUBLE_ATTACK_DMG) / 100.0f, 0.f));
     }
-    else if (m_attackType == PHYSICAL_ATTACK_TYPE::TRIPLE && dynamic_cast<const CCharEntity*>(m_attacker) != nullptr)
+    else if (m_attackType == PHYSICAL_ATTACK_TYPE::TRIPLE && m_attacker->usesPlayerCombatModel())
     {
         m_damage = std::floor<uint32>(m_damage * 1.0f + std::max(m_attacker->getMod(xi::Mod::TRIPLE_ATTACK_DMG) / 100.0f, 0.f));
     }
@@ -735,6 +739,15 @@ void CAttack::ProcessDamage()
     if (auto* PChar = dynamic_cast<CCharEntity*>(m_attacker))
     {
         m_damage = attackutils::CheckForDamageMultiplier(PChar, dynamic_cast<CItemWeapon*>(m_attacker->m_Weapons[slot]), m_damage, m_attackType, slot, m_isFirstSwing);
+    }
+    // (XI: Forever Offline, squad audit N6) a squad mate's weapon procs ("occasionally deals double damage"), Zanshin
+    // and Double/Triple Attack damage rates, as a player's. Its stand-in weapon carries no item mods, so the item it
+    // wears in that slot is read instead (a shared, read-only item template). Unarmed or no item: mods only.
+    else if (auto* PTrust = dynamic_cast<CTrustEntity*>(m_attacker); PTrust != nullptr && PTrust->isSquadMate())
+    {
+        auto* PWorn = PTrust->squadEquip(slot) != 0 ? const_cast<CItemWeapon*>(xi::items::lookup<CItemWeapon>(PTrust->squadEquip(slot))) : nullptr;
+        auto* PWeapon = PWorn != nullptr ? PWorn : dynamic_cast<CItemWeapon*>(m_attacker->m_Weapons[slot]);
+        m_damage      = attackutils::CheckForDamageMultiplier(PTrust, PWeapon, m_damage, m_attackType, slot, m_isFirstSwing);
     }
 
     // Apply Sneak Attack Augment Mod

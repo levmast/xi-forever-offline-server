@@ -417,6 +417,11 @@ end
 
 ---@nodiscard
 ---@return boolean
+function CBaseEntity:isSquadMate()
+end
+
+---@nodiscard
+---@return boolean
 function CBaseEntity:isAlly()
 end
 

@@ -13,10 +13,16 @@ require('scripts/globals/shop')
 local m = Module:new('shop_house_rules')
 
 -- Guild shops: a full refill every day (rollShopDay adds restockRate per day, up to targetStock)
+-- (2026-11-22, Yumainai, Meli: the Goldsmiths' list with blank first and last pages) Only what a guild stocks itself
+-- (it starts with some, or gets some each day). The other lines are things it only resells once a player has sold
+-- them to it: they have a targetStock too, and refilling those put every one of them on the shelf from the second
+-- game day (at once with "Guild shops never run out"): 124 lines at the Goldsmiths' Guild, more than the game's
+-- guild window can show.
 local refilled = 0
 for _, shop in pairs(xi.data.guildShops or {}) do
     for _, cfg in ipairs(shop.stock or {}) do
-        if (cfg.targetStock or 0) > 0 and (cfg.restockRate or 0) < cfg.targetStock then
+        local stocksIt = (cfg.initial or 0) > 0 or (cfg.restockRate or 0) > 0
+        if stocksIt and (cfg.targetStock or 0) > 0 and (cfg.restockRate or 0) < cfg.targetStock then
             cfg.restockRate = cfg.targetStock
             refilled = refilled + 1
         end

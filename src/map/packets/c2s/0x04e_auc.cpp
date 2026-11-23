@@ -21,6 +21,8 @@
 
 #include "0x04e_auc.h"
 
+#include "common/settings.h"
+
 #include "data/enums/zone_misc.h"
 #include "entities/char_entity.h"
 #include "packets/c2s/validation.h"
@@ -30,12 +32,20 @@
 auto GP_CLI_COMMAND_AUC::validate(MapSession* PSession, const CCharEntity* PChar) const -> PacketValidationResult
 {
     auto pv = PacketValidator(PChar)
-                  .blockedBy({ BlockedState::InEvent })
-                  .hasZoneMiscFlag(xi::ZoneMisc::AuctionHouse)
-                  .mustEqual(jailutils::InPrison(PChar), false, "Character in jail")
-                  .oneOf<GP_CLI_COMMAND_AUC_COMMAND>(this->Command)
-                  .mustEqual(this->Result, 0, "Result not 0")
-                  .mustEqual(this->ResultStatus, 0, "Result status");
+                  .blockedBy({ BlockedState::InEvent });
+
+    // (XI: Forever Offline, 2026-11-22, Velderen) map.AH_ANYWHERE: the auction house answers in every area, so the
+    // ahgo add-on's /ah can bid and sell out in the field. Off (the era): only in areas that have an Auction House.
+    if (settings::get<uint8>("map.AH_ANYWHERE") == 0)
+    {
+        pv.hasZoneMiscFlag(xi::ZoneMisc::AuctionHouse);
+    }
+
+    pv
+        .mustEqual(jailutils::InPrison(PChar), false, "Character in jail")
+        .oneOf<GP_CLI_COMMAND_AUC_COMMAND>(this->Command)
+        .mustEqual(this->Result, 0, "Result not 0")
+        .mustEqual(this->ResultStatus, 0, "Result status");
 
     switch (this->Command)
     {

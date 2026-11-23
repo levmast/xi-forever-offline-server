@@ -28,6 +28,8 @@
 
 class CCharEntity;
 class CTrustEntity;
+class CSpell;
+class CBattleEntity;
 
 namespace gambits
 {
@@ -72,6 +74,7 @@ private:
     auto DoCampPullTick(timer::time_point tick, const position_t& camp) -> Task<void>; // FFXI Offline squad camp
     void CampHold(const position_t& camp);
     auto EngageDelayPassed(const CBattleEntity* PTarget) -> bool; // FFXI Offline squad: per-mate engage delay
+    auto OrderedTarget() -> CBattleEntity*;                       // FFXI Offline squad: !squad attack (the player's SQUAD_ATTACK_* local vars)
     void Declump(const CCharEntity* PMaster, const CBattleEntity* PTarget) const;
     void PathOutToDistance(const CBattleEntity* PTarget, float amount);
 
@@ -89,4 +92,20 @@ private:
     timer::time_point m_CampPullTry; // FFXI Offline squad camp: the puller's last pull spell or ranged shot
     uint32            m_EngageWaitTarget = 0; // FFXI Offline squad: the monster this mate is waiting to engage (engage delay)
     timer::time_point m_EngageWaitSince;      // ...and since when
+
+    // FFXI Offline squad (2026-11-22): an area spell cast on oneself (Protectra, Shellra, the Bar spells) is held back
+    // until its caster has stepped within reach of the player; see Cast and StepInTick
+    SpellID           m_StepInSpell   = SpellID::None; // the spell that is waiting
+    timer::time_point m_StepInSince;                   // ...since when (it is cast anyway after a few seconds)
+    bool              m_StepInCasting = false;         // StepInTick is casting it now: do not hold it back again
+    auto StepInRadius(const CSpell* PSpell, const CBattleEntity* PTarget) const -> float;
+    auto AreaSpellCovers(float radius) const -> bool;
+    auto StepInTick() -> bool;
+
+public:
+    // true while an area spell waits for its caster to step in (a spell asked for in party chat counts as started)
+    auto IsSteppingIn() const -> bool
+    {
+        return m_StepInSpell != SpellID::None;
+    }
 };
