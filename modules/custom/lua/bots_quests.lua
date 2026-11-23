@@ -122,9 +122,16 @@ local function buildCatalog()
         catalog.lines[line.key] = {}
     end
 
-    local ok, files = pcall(GetContainerFilenamesList)
-    if not ok or type(files) ~= 'table' then
+    -- (the server returns a C++ list, not a Lua table: read it by index; on Windows its paths use backslashes)
+    local ok, raw = pcall(GetContainerFilenamesList)
+    if not ok or raw == nil then
+        note('quest catalog: the server gave no script list (' .. tostring(raw) .. '), so no quests or missions')
         return catalog
+    end
+
+    local files = {}
+    for i = 1, #raw do
+        files[i] = (tostring(raw[i]):gsub('\\', '/'))
     end
 
     for _, file in ipairs(files) do
