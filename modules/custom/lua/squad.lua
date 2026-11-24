@@ -6090,6 +6090,10 @@ jobs[jobIds.WHM] =
         addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 25), family('CURE'))
         addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'SLEEP_I'), spell('CURE'))
         addGambit(mob, ai.t.PARTY, cond(ai.c.STATUS, 'SLEEP_II'), spell('CURE'))
+        -- Regen first (2026-11-24, levi): right after the emergency cures, Regen on the tank (a PLD/RUN, or whoever has the
+        -- Tank party role), then on anyone else under 90% HP who lacks it, before the 75% cures and the other buffs
+        addGambit(mob, ai.t.TANK, cond(ai.c.NOT_STATUS, 'REGEN'), family('REGEN'))
+        addGambit(mob, ai.t.PARTY, both(cond(ai.c.NOT_STATUS, 'REGEN'), cond(ai.c.HPP_LT, 90)), family('REGEN'))
         addGambit(mob, ai.t.PARTY, cond(ai.c.HPP_LT, 75), family('CURE'))
         addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'PROTECT'), family('PROTECTRA'))
         addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'SHELL'), family('SHELLRA'))
