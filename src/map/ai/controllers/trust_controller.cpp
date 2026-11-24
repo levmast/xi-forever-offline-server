@@ -63,8 +63,11 @@ enum TRUST_MOVEMENT_TYPE : int8
 // FFXI Offline squad camp (squad.lua: !squad camp / !squad pull). Squad mates (local var SQUAD_ID) with SQUAD_CAMP
 // set hold a spot around the camp instead of following you, fight what comes within CampFightRadius of it (even when
 // you are not engaged: a mate pulled it, or you are resting), and let go of anything farther than CampLeash.
-// A mate with SQUAD_PULL_PHASE 1 runs out to SQUAD_PULL_TARGET (a mob's targid) and engages it; once the mob is
-// engaged (2) it runs back to camp, and at camp the phase goes back to 0 and the fight is on.
+// A mate with SQUAD_PULL_PHASE 1 runs out to SQUAD_PULL_TARGET (a mob's targid) and pulls it; once the mob is
+// engaged (2) it runs back to camp, and at camp the phase goes back to 0, the puller engages it and the fight is on.
+// (2026-11-24, levi) A puller with a pull spell or a ranged weapon pulls without engaging (no weapon out, no melee):
+// it shoots or casts from range, runs home with its weapon away, and engages only at camp. One with neither (or
+// whose three shots and three casts all failed) walks in and engages as before.
 // The camp position is in SQUAD_CAMP_X / _Y / _Z, as yalms * 100 + 10000000 (local vars are unsigned).
 constexpr float CampHoldRadius  = 2.5f;
 constexpr float CampFightRadius = 20.0f;
@@ -920,11 +923,6 @@ auto CTrustController::DoCampPullTick(timer::time_point tick, const position_t& 
             co_return;
         }
 
-        if (!PTrust->PAI->IsEngaged() || PTrust->GetBattleTarget() != PMob)
-        {
-            PTrust->PAI->Internal_Engage(EntityId(PMob));
-        }
-
         const float away = distance(PTrust->loc.p, PMob->loc.p);
 
         // from range: a pull spell (casters) or a shot (a ranged weapon); it waits for it to land before running again
@@ -933,43 +931,69 @@ auto CTrustController::DoCampPullTick(timer::time_point tick, const position_t& 
             co_return;
         }
 
-        if (away <= CampPullShootRange && tick - m_CampPullTry > 4s)
+        // (2026-11-20, Altair: a THF puller with a bow ran in and shot from melee range) a squad mate is a mob to
+        // the engine, and a mob's ranged attacks reach 14 yalms (GetRangedAttackRange), not a player's 25: it shoots
+        // from inside that. At most three shots and three casts at one monster (no line of sight, no ammunition, no MP...).
+        if (PTrust->GetLocalVar("SQUAD_PULL_SHOT_AT") != PMob->targid)
         {
-            if (const auto spell = campPullSpell(PTrust); spell && away <= CampPullCastRange)
-            {
-                PTrust->PAI->PathFind->Clear();
-                m_CampPullTry = tick;
-                Cast(EntityId(PMob), *spell);
-                co_return;
-            }
-
-            // (2026-11-20, Altair: a THF puller with a bow ran in and shot from melee range) a squad mate is a mob to
-            // the engine, and a mob's ranged attacks reach 14 yalms (GetRangedAttackRange), not a player's 25. The
-            // shot from 20 was refused as too far, and by the next try 4 seconds later she had walked up to it.
-            // At most three tries at one monster (no line of sight, no ammunition...): after that it walks in as before.
-            if (PTrust->GetLocalVar("SQUAD_PULL_SHOT_AT") != PMob->targid)
-            {
-                PTrust->SetLocalVar("SQUAD_PULL_SHOT_AT", PMob->targid);
-                PTrust->SetLocalVar("SQUAD_PULL_SHOTS", 0);
-            }
-
-            if (hasRangedWeapon(PTrust) && PTrust->GetLocalVar("SQUAD_PULL_SHOTS") < 3 &&
-                away <= std::min(CampPullShootRange, PTrust->GetRangedAttackRange() - 1.0f))
-            {
-                PTrust->PAI->PathFind->Clear();
-                m_CampPullTry = tick;
-                PTrust->SetLocalVar("SQUAD_PULL_SHOTS", PTrust->GetLocalVar("SQUAD_PULL_SHOTS") + 1);
-                RangedAttack(EntityId(PMob));
-                co_return;
-            }
+            PTrust->SetLocalVar("SQUAD_PULL_SHOT_AT", PMob->targid);
+            PTrust->SetLocalVar("SQUAD_PULL_SHOTS", 0);
+            PTrust->SetLocalVar("SQUAD_PULL_CASTS", 0);
         }
 
-        // a shooter already in range waits for its next try where it stands instead of walking up to the monster
-        if (hasRangedWeapon(PTrust) && PTrust->GetLocalVar("SQUAD_PULL_SHOT_AT") == PMob->targid && PTrust->GetLocalVar("SQUAD_PULL_SHOTS") < 3 &&
-            away <= std::min(CampPullShootRange, PTrust->GetRangedAttackRange() - 1.0f) && tick - m_CampPullTry <= 4s)
+        const auto  spell      = campPullSpell(PTrust);
+        const bool  canCast    = spell.has_value() && PTrust->GetLocalVar("SQUAD_PULL_CASTS") < 3;
+        const bool  canShoot   = hasRangedWeapon(PTrust) && PTrust->GetLocalVar("SQUAD_PULL_SHOTS") < 3;
+        const float shootReach = std::min(CampPullShootRange, PTrust->GetRangedAttackRange() - 1.0f);
+
+        if (canCast || canShoot)
         {
-            PTrust->PAI->PathFind->Clear();
+            // (2026-11-24, levi) a ranged pull: weapon away, no melee. It engages at camp (phase 2 below).
+            if (PTrust->PAI->IsEngaged())
+            {
+                PTrust->PAI->Internal_Disengage();
+                co_return;
+            }
+
+            const bool castNow  = canCast && away <= CampPullCastRange;
+            const bool shootNow = canShoot && away <= shootReach;
+            if (castNow || shootNow)
+            {
+                // in reach: it stands where it is and tries every 4 seconds, never walking up to the monster
+                PTrust->PAI->PathFind->Clear();
+                if (tick - m_CampPullTry > 4s)
+                {
+                    m_CampPullTry = tick;
+                    if (castNow)
+                    {
+                        PTrust->SetLocalVar("SQUAD_PULL_CASTS", PTrust->GetLocalVar("SQUAD_PULL_CASTS") + 1);
+                        Cast(EntityId(PMob), *spell);
+                    }
+                    else
+                    {
+                        PTrust->SetLocalVar("SQUAD_PULL_SHOTS", PTrust->GetLocalVar("SQUAD_PULL_SHOTS") + 1);
+                        RangedAttack(EntityId(PMob));
+                    }
+                }
+
+                co_return;
+            }
+
+            // not in reach yet: walk up until it is
+            if (!PTrust->PAI->PathFind->IsFollowingPath() || tick - m_CampRepath > 1s)
+            {
+                m_CampRepath = tick;
+                PTrust->PAI->PathFind->PathAround(PMob->loc.p, 2.0f, PATHFLAG_NONE);
+            }
+
+            PTrust->PAI->PathFind->FollowPath(tick);
             co_return;
+        }
+
+        // no ranged way to pull it: walk in and engage it, as before
+        if (!PTrust->PAI->IsEngaged() || PTrust->GetBattleTarget() != PMob)
+        {
+            PTrust->PAI->Internal_Engage(EntityId(PMob));
         }
 
         if (away > 2.5f)
@@ -1002,7 +1026,19 @@ auto CTrustController::DoCampPullTick(timer::time_point tick, const position_t& 
     {
         PTrust->SetLocalVar("SQUAD_PULL_PHASE", 0); // back at camp with it: the fight is on
         PTrust->PAI->PathFind->Clear();
+        // (2026-11-24, levi) only now does the puller draw its weapon on it
+        if (!PTrust->PAI->IsEngaged() || PTrust->GetBattleTarget() != PMob)
+        {
+            PTrust->PAI->Internal_Engage(EntityId(PMob));
+        }
+
         co_return;
+    }
+
+    // (2026-11-24, levi) the run home is with the weapon away: no turning to swing at it on the way
+    if (PTrust->PAI->IsEngaged() && !PTrust->PAI->IsCurrentState<CMagicState>() && !PTrust->PAI->IsCurrentState<CRangeState>())
+    {
+        PTrust->PAI->Internal_Disengage();
     }
 
     if (!PTrust->PAI->PathFind->IsFollowingPath() || tick - m_CampRepath > 2s)
