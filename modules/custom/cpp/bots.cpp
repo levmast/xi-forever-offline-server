@@ -60,6 +60,12 @@
 #include "map/packets/c2s/0x074_group_solicit_res.h"
 #include "map/packets/c2s/0x077_group_change2.h"
 #include "map/packets/c2s/0x0b5_chat_std.h"
+#include "map/packets/c2s/0x104_bazaar_exit.h"
+#include "map/packets/c2s/0x105_bazaar_list.h"
+#include "map/packets/c2s/0x106_bazaar_buy.h"
+#include "map/packets/c2s/0x109_bazaar_open.h"
+#include "map/packets/c2s/0x10a_bazaar_itemset.h"
+#include "map/packets/c2s/0x10b_bazaar_close.h"
 #include "map/packets/c2s/0x0b6_chat_name.h"
 #include "map/packets/c2s/0x0c4_group_comlink_active.h"
 #include "map/items/item_linkshell.h"
@@ -1963,6 +1969,150 @@ class BotsModule : public CPPModule
                                }
 
                                return 0;
+                           });
+
+        // bazaar (bots_trade.lua): the same packets a player's client sends - close (price mode), set prices, open.
+        // An item at price 0 leaves the bazaar. Returns true when the item is priced (or cleared) as asked.
+        ::lua.set_function("BotBazaarSet", [](uint32 charId, uint16 itemId, uint32 price) -> bool
+                           {
+                               Bot*         b     = botOf(charId);
+                               CCharEntity* PChar = charOf(b);
+                               if (!PChar || !b->online)
+                               {
+                                   return false;
+                               }
+
+                               CItemContainer* inv = PChar->getStorage(LOC_INVENTORY);
+                               int             found = -1;
+                               for (uint8 slot = 1; slot <= inv->GetSize(); ++slot)
+                               {
+                                   CItem* PItem = inv->GetItem(slot);
+                                   if (!PItem || PItem->getID() != itemId || PItem->hasFlag(xi::ItemFlag::Exclusive))
+                                   {
+                                       continue;
+                                   }
+
+                                   const bool listed = PItem->state() == xi::ItemState::Bazaar;
+                                   if (price == 0 ? listed : (!PItem->isBusy() || listed))
+                                   {
+                                       found = slot;
+                                       break;
+                                   }
+                               }
+
+                               if (found < 0)
+                               {
+                                   return false;
+                               }
+
+                               GP_CLI_COMMAND_BAZAAR_CLOSE close{};
+                               std::ignore = inject(b, close);
+
+                               GP_CLI_COMMAND_BAZAAR_ITEMSET set{};
+                               set.ItemIndex = static_cast<uint8_t>(found);
+                               set.Price     = std::min<uint32>(price, 99999999);
+                               const bool ok = inject(b, set);
+
+                               GP_CLI_COMMAND_BAZAAR_OPEN open{};
+                               std::ignore = inject(b, open);
+                               return ok && inv->GetItem(found) != nullptr && inv->GetItem(found)->getCharPrice() == set.Price;
+                           });
+
+        // what a character (a bot, or you) has in its bazaar right now: { { id, price, qty, slot }, ... } (empty when none)
+        ::lua.set_function("BotBazaarItems", [](uint32 charId) -> sol::table
+                           {
+                               auto         t     = ::lua.create_table();
+                               CCharEntity* PChar = zoneutils::GetChar(charId);
+                               if (!PChar)
+                               {
+                                   if (Bot* b = botOf(charId))
+                                   {
+                                       PChar = charOf(b);
+                                   }
+                               }
+
+                               if (!PChar || !PChar->hasBazaar())
+                               {
+                                   return t;
+                               }
+
+                               CItemContainer* inv = PChar->getStorage(LOC_INVENTORY);
+                               for (uint8 slot = 1; slot <= inv->GetSize(); ++slot)
+                               {
+                                   CItem* PItem = inv->GetItem(slot);
+                                   if (PItem && PItem->getCharPrice() != 0)
+                                   {
+                                       auto row     = ::lua.create_table();
+                                       row["id"]    = PItem->getID();
+                                       row["price"] = PItem->getCharPrice();
+                                       row["qty"]   = PItem->getQuantity();
+                                       row["slot"]  = slot;
+                                       t.add(row);
+                                   }
+                               }
+
+                               return t;
+                           });
+
+        // a bot buys from someone's bazaar (same zone, standing close): views it, buys qty of the cheapest listing of
+        // itemId at or below maxPrice (each), leaves. Returns the gil it paid (0 = nothing bought).
+        ::lua.set_function("BotBazaarBuy", [](uint32 charId, uint32 sellerId, uint16 itemId, uint32 maxPrice, uint32 qty) -> uint32
+                           {
+                               Bot*         b     = botOf(charId);
+                               CCharEntity* PChar = charOf(b);
+                               if (!PChar || !b->online || !PChar->loc.zone || maxPrice == 0)
+                               {
+                                   return 0;
+                               }
+
+                               CCharEntity* PSeller = PChar->loc.zone->GetCharByID(sellerId);
+                               if (!PSeller || PSeller == PChar || !PSeller->hasBazaar() || distance(PChar->loc.p, PSeller->loc.p) > 12.0f)
+                               {
+                                   return 0;
+                               }
+
+                               CItemContainer* sInv = PSeller->getStorage(LOC_INVENTORY);
+                               int             best = -1;
+                               uint32          bestPrice = 0;
+                               for (uint8 slot = 1; slot <= sInv->GetSize(); ++slot)
+                               {
+                                   CItem* PItem = sInv->GetItem(slot);
+                                   if (PItem && PItem->getID() == itemId && PItem->getCharPrice() != 0 && PItem->getCharPrice() <= maxPrice &&
+                                       (best < 0 || PItem->getCharPrice() < bestPrice))
+                                   {
+                                       best      = slot;
+                                       bestPrice = PItem->getCharPrice();
+                                   }
+                               }
+
+                               if (best < 0)
+                               {
+                                   return 0;
+                               }
+
+                               const uint32 num = std::max<uint32>(1, std::min<uint32>(qty, sInv->GetItem(best)->getQuantity()));
+                               const uint32 gilBefore = PChar->getStorage(LOC_INVENTORY)->GetItem(0) ? PChar->getStorage(LOC_INVENTORY)->GetItem(0)->getQuantity() : 0;
+
+                               PChar->BazaarID.clean();
+                               GP_CLI_COMMAND_BAZAAR_LIST list{};
+                               list.UniqueNo = PSeller->id;
+                               list.ActIndex = PSeller->targid;
+                               if (!inject(b, list))
+                               {
+                                   return 0;
+                               }
+
+                               GP_CLI_COMMAND_BAZAAR_BUY buy{};
+                               buy.BazaarItemIndex = static_cast<uint8_t>(best);
+                               buy.BuyNum          = num;
+                               std::ignore         = inject(b, buy);
+
+                               GP_CLI_COMMAND_BAZAAR_EXIT leave{};
+                               std::ignore = inject(b, leave);
+                               PChar->BazaarID.clean();
+
+                               const uint32 gilAfter = PChar->getStorage(LOC_INVENTORY)->GetItem(0) ? PChar->getStorage(LOC_INVENTORY)->GetItem(0)->getQuantity() : 0;
+                               return gilBefore > gilAfter ? gilBefore - gilAfter : 0;
                            });
 
         // dead: "return to your Home Point" (the same answer a player gives the death menu)

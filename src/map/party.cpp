@@ -34,6 +34,7 @@
 #include "treasure_pool.h"
 #include "utils/blueutils.h"
 #include "utils/charutils.h"
+#include "utils/hardcoreutils.h"
 #include "utils/jailutils.h"
 #include "utils/zoneutils.h"
 
@@ -632,6 +633,22 @@ void CParty::AddMember(CBattleEntity* PEntity)
     // FFXI Offline: a player may join while trusts (squad mates) are out. IsFull() counts the trusts, so the
     // party never goes over six. (Stock: refused whenever HasTrusts().)
 
+    // XI: Forever Offline (2026-11-23): Steel and Silver characters only party with hardcore characters (hardcoreutils.h).
+    // The invite packets are refused with a message by modules/custom/cpp/hardcore.cpp; this catches every other way in
+    // (bot players joining, co-op).
+    if (const auto* PNew = dynamic_cast<const CCharEntity*>(PEntity); PNew != nullptr && m_PartyType == PARTY_PCS)
+    {
+        const int32 newMode = hardcoreutils::mode(PNew);
+        for (const auto* PMember : members)
+        {
+            if (const auto* POld = dynamic_cast<const CCharEntity*>(PMember); POld != nullptr && !hardcoreutils::canGroup(newMode, hardcoreutils::mode(POld)))
+            {
+                ShowInfoFmt("CParty::AddMember() - {} cannot join {}'s party (hardcore mode)", PNew->getName(), POld->getName());
+                return;
+            }
+        }
+    }
+
     PEntity->PParty = this;
     members.emplace_back(PEntity);
 
@@ -721,6 +738,19 @@ void CParty::AddMember(uint32 id)
         }
 
         // FFXI Offline: allowed with trusts out (see AddMember above); IsFull() counts them
+
+        // XI: Forever Offline (2026-11-23): the hardcore party rule, for a member joining from another area
+        {
+            const int32 newMode = hardcoreutils::modeOf(id);
+            for (const auto* PMember : members)
+            {
+                if (const auto* POld = dynamic_cast<const CCharEntity*>(PMember); POld != nullptr && !hardcoreutils::canGroup(newMode, hardcoreutils::mode(POld)))
+                {
+                    ShowInfoFmt("CParty::AddMember() - character {} cannot join {}'s party (hardcore mode)", id, POld->getName());
+                    return;
+                }
+            }
+        }
 
         uint32 allianceid = 0;
         uint16 Flags      = 0;

@@ -21,6 +21,8 @@
 
 #include "auctionutils.h"
 
+#include <algorithm>
+
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/timer.h"
@@ -34,7 +36,9 @@
 #include "roe.h"
 
 #include "items/transactions/item_claim.h"
+#include "common/hardcore_market.h"
 #include "utils/charutils.h"
+#include "utils/hardcoreutils.h"
 #include "utils/itemutils.h"
 
 namespace
@@ -276,6 +280,25 @@ auto auctionutils::PurchasingItems(CCharEntity* PChar, GP_AUC_PARAM_BID param) -
                 return false;
             }
 
+            // (XI: Forever Offline, 2026-11-23) Randomized characters' own auction house (common/hardcore_market.h):
+            // the stock rotates every 6 hours and each item's price moves up to 20% either way for them. A listing is
+            // theirs when the bid covers its price times the item's factor; the sale is written at the listing's
+            // equivalent, never above the bid, so sellers and the price history stay as everyone else sees them.
+            uint32 listingCap = param.BidPrice;
+            uint32 salePrice  = param.BidPrice;
+            if (hardcoreutils::mode(PChar) == 4)
+            {
+                const uint32 now = earth_time::timestamp();
+                if (!hardcoremarket::inStock(param.ItemNo, now))
+                {
+                    PChar->pushPacket<GP_SERV_COMMAND_AUC>(GP_CLI_COMMAND_AUC_COMMAND::Bid, 0xC5, param.ItemNo, param.BidPrice, param.ItemStacks, PItem->getStackSize());
+                    return false;
+                }
+
+                listingCap = static_cast<uint32>(static_cast<double>(param.BidPrice) / hardcoremarket::factor(param.ItemNo, now));
+                salePrice  = std::min(param.BidPrice, listingCap);
+            }
+
             auto transaction = ItemClaimTransaction::start(PChar);
             if (!transaction)
             {
@@ -294,11 +317,11 @@ auto auctionutils::PurchasingItems(CCharEntity* PChar, GP_AUC_PARAM_BID param) -
                                                        "AND stack = ? AND price <= ? ORDER BY price ASC, id ASC LIMIT 1",
                                                        PChar->id,
                                                        PChar->getName(),
-                                                       param.BidPrice,
+                                                       salePrice,
                                                        earth_time::timestamp(),
                                                        param.ItemNo,
                                                        param.ItemStacks == 0,
-                                                       param.BidPrice);
+                                                       listingCap);
                     if (!rset)
                     {
                         throw std::runtime_error(fmt::format("AH: could not mark item {} sold to {} ({})", param.ItemNo, PChar->getName(), PChar->id));

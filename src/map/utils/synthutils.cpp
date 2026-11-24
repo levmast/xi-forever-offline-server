@@ -35,6 +35,7 @@
 #include "items/transactions/synth.h"
 #include "itemutils.h"
 #include "lua/luautils.h"
+#include "utils/hardcoreutils.h"
 #include "map_session.h"
 #include "packets/char_status.h"
 #include "packets/s2c/0x029_battle_message.h"
@@ -627,7 +628,7 @@ auto calculateSynthResult(CCharEntity* PChar) -> SynthesisOutcome
     }
 
     // See: https://www.bluegartr.com/threads/130586-CraftyMath-v2-Post-September-2017-Update page 3.
-    chanceHQ = (chanceHQ + 100.0 * static_cast<double>(PChar->getMod(xi::Mod::SYNTH_HQ_RATE)) / 512.0) * settings::get<double>("map.CRAFT_HQ_CHANCE_MULTIPLIER");
+    chanceHQ = (chanceHQ + 100.0 * static_cast<double>(PChar->getMod(xi::Mod::SYNTH_HQ_RATE)) / 512.0) * hardcoreutils::rate(PChar, "map.CRAFT_HQ_CHANCE_MULTIPLIER");
 
     // Limit max hq chance
     chanceHQ = std::min(chanceHQ, 80.0);
@@ -727,7 +728,7 @@ auto calculateDesynthResult(CCharEntity* PChar) -> SynthesisOutcome
     }
 
     // See: https://www.bluegartr.com/threads/130586-CraftyMath-v2-Post-September-2017-Update page 3.
-    double chanceHQ = (60.0 + 100.0 * static_cast<double>(PChar->getMod(xi::Mod::SYNTH_HQ_RATE)) / 512.0) * settings::get<double>("map.CRAFT_HQ_CHANCE_MULTIPLIER");
+    double chanceHQ = (60.0 + 100.0 * static_cast<double>(PChar->getMod(xi::Mod::SYNTH_HQ_RATE)) / 512.0) * hardcoreutils::rate(PChar, "map.CRAFT_HQ_CHANCE_MULTIPLIER");
 
     // Limit max hq chance
     chanceHQ = std::min(chanceHQ, 80.0);
@@ -1019,7 +1020,7 @@ void doSynthSkillUp(CCharEntity* PChar)
         skillUpChance                  = skillUpChance + modSynthSkillGain;
 
         // Apply setting multiplier.
-        const double craftChanceMultiplier = settings::get<double>("map.CRAFT_CHANCE_MULTIPLIER");
+        const double craftChanceMultiplier = hardcoreutils::rate(PChar, "map.CRAFT_CHANCE_MULTIPLIER");
         skillUpChance                      = skillUpChance * craftChanceMultiplier;
 
         // Chance penalties. The retail desynth rate was measured with breaks included, so it takes none.

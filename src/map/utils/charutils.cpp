@@ -43,6 +43,7 @@
 #include "persist_batch.h"
 
 #include "lua/luautils.h"
+#include "utils/hardcoreutils.h"
 
 #include "ai/ai_container.h"
 #include "ai/states/attack_state.h"
@@ -3868,13 +3869,13 @@ void TrySkillUP(CCharEntity* PChar, xi::SkillType SkillID, uint8 lvl, bool force
 
         int16  Diff          = MaxSkill - CurSkill / 10;
         uint16 skillTier     = CurSkill / 100;
-        double SkillUpChance = Diff / 5.0 + settings::get<double>("map.SKILLUP_CHANCE_MULTIPLIER") * (2.0 - log10(1.0 + skillTier));
+        double SkillUpChance = Diff / 5.0 + hardcoreutils::rate(PChar, "map.SKILLUP_CHANCE_MULTIPLIER") * (2.0 - log10(1.0 + skillTier));
 
         double random = xirand::GetRandomNumber(1.);
 
         // (XI: Forever Offline, 2026-11-22, Ricc: "at 20x I still struggle to cap") the 50% ceiling made any multiplier above
         // about 2 do nothing more; the ceiling now rises with the multiplier (0.5 x multiplier, at most 95% of eligible hits)
-        SkillUpChance = std::min(SkillUpChance, std::min(0.95, 0.5 * std::max(1.0, settings::get<double>("map.SKILLUP_CHANCE_MULTIPLIER"))));
+        SkillUpChance = std::min(SkillUpChance, std::min(0.95, 0.5 * std::max(1.0, hardcoreutils::rate(PChar, "map.SKILLUP_CHANCE_MULTIPLIER"))));
 
         // Check for skillup% bonus. https://www.bg-wiki.com/bg/Category:Skill_Up_Food
         // Assuming multiplicative even though rate is already a % because 0.5 + 0.8 would be > 1.
@@ -4254,6 +4255,21 @@ auto delTitle(CCharEntity* PChar, uint16 Title) -> int32
 
 void setTitle(CCharEntity* PChar, uint16 Title)
 {
+    // (XI: Forever Offline, 2026-11-23) Iron, Steel, Silver and Randomized characters always wear their mode's title
+    // (hardcoreutils::modeTitle). Any other title they earn is still added to their list; it just doesn't go on.
+    // A mode's title never goes on a character without that mode.
+    const uint16 locked = hardcoreutils::modeTitle(hardcoreutils::mode(PChar));
+    if ((locked != 0 && Title != locked) || (locked == 0 && hardcoreutils::isModeTitle(Title)))
+    {
+        if (!hardcoreutils::isModeTitle(Title))
+        {
+            addTitle(PChar, Title);
+            SaveTitles(PChar);
+        }
+
+        return;
+    }
+
     PChar->profile.title = Title;
     PChar->pushPacket<GP_SERV_COMMAND_CLISTATUS>(PChar);
 
@@ -4524,14 +4540,17 @@ void DistributeGil(CCharEntity* PChar, CMobEntity* PMob)
     uint32 gil    = PMob->GetRandomGil();
     uint32 gBonus = 0;
 
-    if (gil && settings::get<float>("map.MOB_GIL_MULTIPLIER") >= 0.0f)
+    // XI: Forever Offline: a hardcore mode has its own gil rates (hardcoreutils.h)
+    const double gilMultiplier = hardcoreutils::rate(PChar, "map.MOB_GIL_MULTIPLIER");
+    const uint8  gilBonus      = static_cast<uint8>(std::clamp(hardcoreutils::rate(PChar, "map.ALL_MOBS_GIL_BONUS"), 0.0, 255.0));
+    if (gil && gilMultiplier >= 0.0)
     {
-        gil = static_cast<uint32>(gil * settings::get<float>("map.MOB_GIL_MULTIPLIER"));
+        gil = static_cast<uint32>(gil * gilMultiplier);
     }
 
-    if (settings::get<uint8>("map.ALL_MOBS_GIL_BONUS"))
+    if (gilBonus)
     {
-        gBonus = settings::get<uint8>("map.ALL_MOBS_GIL_BONUS") * PMob->GetMLevel();
+        gBonus = gilBonus * PMob->GetMLevel();
         gil += std::clamp<uint32>(gBonus, 1, settings::get<uint32>("map.MAX_GIL_BONUS"));
     }
 
@@ -4613,7 +4632,7 @@ void DistributeItem(CCharEntity* PChar, CBaseEntity* PEntity, uint16 itemid, uin
         thDropRate = thDropRateFunction(PMob->m_THLvl, thDropRate);
     }
 
-    if (thDropRate > 0 && (1 + xirand::GetRandomNumber(10000)) <= thDropRate * settings::get<float>("map.DROP_RATE_MULTIPLIER"))
+    if (thDropRate > 0 && (1 + xirand::GetRandomNumber(10000)) <= thDropRate * hardcoreutils::rate(PChar, "map.DROP_RATE_MULTIPLIER"))
     {
         PChar->PTreasurePool->addItem(itemid, PEntity);
     }
@@ -5081,7 +5100,7 @@ void AddExperiencePoints(bool expFromRaise, bool awardRegionPoints, bool fromScr
     // Scripts have their own settings in main.lua settings. This is for exp from combat.
     if (!expFromRaise && !fromScripts)
     {
-        exp = (uint32)(exp * settings::get<float>("map.EXP_RATE"));
+        exp = (uint32)(exp * hardcoreutils::rate(PChar, "map.EXP_RATE")); // XI: Forever Offline: a hardcore mode has its own rate
     }
     uint16 currentExp  = PChar->jobs.exp[static_cast<uint8>(PChar->GetMJob())];
     bool   onLimitMode = false;

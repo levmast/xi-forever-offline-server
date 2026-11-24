@@ -15,6 +15,7 @@
 #include "map/packet_system.h"
 #include "map/packets/basic.h"
 #include "map/packets/s2c/0x017_chat_std.h"
+#include "map/utils/hardcoreutils.h"
 #include "map/zone.h"
 #include "packets/s2c/0x04c_auc.h"
 
@@ -44,6 +45,9 @@ class AHPaginationModule : public CPPModule
         {
             return false;
         }
+
+        // (2026-11-23) tells the search server who is using the auction house from this address (Randomized view)
+        hardcoreutils::noteAuctionViewer(PChar);
 
         // (XI: Forever Offline, 2026-11-23, Emeric, Velderen, sparkiie) map.AH_ANYWHERE lets the auction house answer in
         // every area (0x04e_auc.cpp); this check ran first and dropped the packet, so bids out in the field still hung.

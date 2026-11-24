@@ -78,6 +78,8 @@ phoenix/dynamis/lua/
 
 # Squad mates
 custom/cpp/squad.cpp
+# Hardcore modes (Iron / Steel / Silver): auction house, trade, delivery and party rules (rules and rates: custom/late/hardcore.lua)
+custom/cpp/hardcore.cpp
 custom/lua/squad.lua
 # Party chat commands (thin squad.cpp: the chat decisions are in this file; it needs the rebuilt map server)
 custom/lua/squad_logic.lua

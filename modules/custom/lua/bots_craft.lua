@@ -319,6 +319,11 @@ local function sellables(bot, keep)
     return out
 end
 
+-- (bots_trade.lua: what it can put in its bazaar)
+function C.sellables(bot)
+    return sellables(bot)
+end
+
 function C.hasSellables(bot)
     return #sellables(bot) > 0
 end

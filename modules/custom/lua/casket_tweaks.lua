@@ -104,6 +104,18 @@ local function fillChest(npc, items, gil)
     npc:setLocalVar('[caskets]GIL', gil)
 end
 
+-- (2026-11-23) a Randomized character's casket holds random items of the area instead (custom/late/hardcore.lua)
+local function randomized(player, items)
+    if xi.hardcore and type(xi.hardcore.randomCasket) == 'function' then
+        local ok, swapped = pcall(xi.hardcore.randomCasket, player, items)
+        if ok and type(swapped) == 'table' then
+            return swapped
+        end
+    end
+
+    return items
+end
+
 local function tweakNewCaskets(player, zone, since)
     for _, npc in ipairs(zone:queryEntitiesByName('Treasure_Casket')) do
         if
@@ -123,9 +135,9 @@ local function tweakNewCaskets(player, zone, since)
                 fillChest(npc, { utils.randomEntry(loot.cosmetics), 0, 0, 0 }, rollGil(level, SUPER_GIL))
                 say(player, '...and it is a golden super casket!')
             elseif locked then
-                fillChest(npc, rollItems(poolFor(loot.brown, level), BROWN_COUNTS), rollGil(level, BROWN_GIL))
+                fillChest(npc, randomized(player, rollItems(poolFor(loot.brown, level), BROWN_COUNTS)), rollGil(level, BROWN_GIL))
             else
-                fillChest(npc, rollItems(poolFor(loot.blue, level), BLUE_COUNTS), rollGil(level, BLUE_GIL))
+                fillChest(npc, randomized(player, rollItems(poolFor(loot.blue, level), BLUE_COUNTS)), rollGil(level, BLUE_GIL))
             end
         end
     end

@@ -581,7 +581,9 @@ xi.squad.eatNow = eatIfNeeded
 local STARTER_JOB_MAX = 6
 
 local function jobUnlocked(player, job)
-    return job <= STARTER_JOB_MAX or player:hasJob(job)
+    -- (2026-11-23, Randomized mode) a Randomized character's job quests unlock the job for its squad only (hardcore.lua)
+    return job <= STARTER_JOB_MAX or player:hasJob(job) or
+        (xi.hardcore ~= nil and xi.hardcore.squadJob ~= nil and xi.hardcore.squadJob(player, job) == true)
 end
 
 local function lockedMessage(player, job)
@@ -2753,6 +2755,14 @@ local function callMate(player, mate)
         for _, wait in ipairs({ 4000, 10000 }) do
             trust:timer(wait, function(mob)
                 pcall(SquadRefreshLook, mob)
+                -- (2026-11-23, Hasuko: after zoning the mates were gone from the party list while still in the party) the
+                -- party list sent while the area was loading is lost the same way: send it again with the look
+                pcall(function()
+                    local master = mob:getMaster()
+                    if master ~= nil and master:isPC() then
+                        master:reloadParty()
+                    end
+                end)
             end)
         end
     end
@@ -3931,6 +3941,18 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             say(player, string.format('squadpanel:%d|%s|%s|%d|%s|%d|%s|%s|%d|%d', mate.slot, mate.name, jobNames[mate.mjob] or '???', main,
                 sub ~= 0 and jobNames[sub] or '-', subLevel, role, mode, isSummoned(player, mate.id) and 1 or 0,
                 switchesOf(player, mate.id)))
+            -- (2026-11-23, Dugahst) jl|<slot>|<JOB>:<level>,...: each job's own level, for the Job and Sub lists
+            -- (servermenu 1.26m shows "WHM (34)"); an older menu ignores the line
+            local levels = {}
+            for job, info in pairs(mate.jobs or {}) do
+                if jobNames[job] and info and (info.level or 0) > 0 then
+                    levels[#levels + 1] = string.format('%s:%d', jobNames[job], info.level)
+                end
+            end
+            if #levels > 0 then
+                table.sort(levels)
+                say(player, string.format('squadpanel:jl|%d|%s', mate.slot, table.concat(levels, ',')))
+            end
         end
 
         -- the menu's Camp row (servermenu 1.6): camp|<on>|<puller slot, 0 = you>|<paused>|<pulls>
@@ -5498,7 +5520,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
         player:setCharVar('SQUAD_RANGE_' .. mate.id, choice)
         say(player, string.format('%s now fights %s. Dismiss and call them again to apply it.', mate.name,
-            ({ [0] = 'at its job\'s usual distance', 'up close', 'from mid range (6 yalms)', 'from long range (12 yalms)' })[choice]))
+            ({ [0] = 'at its job\'s usual distance', 'up close', 'from mid range (15 yalms)', 'from long range (20 yalms)' })[choice]))
         return
     elseif action == 'ws' then
         -- When this mate weapon skills, and which one: !squad ws <slot> chain | <TP 1000-3000> [weapon_skill | best]
@@ -6886,8 +6908,9 @@ local function squadSpawn(mob)
     local rangeMaster = mob:getMaster()
     local rangeChoice = rangeMaster and rangeMaster:getCharVar('SQUAD_RANGE_' .. mob:getLocalVar('SQUAD_ID')) or 0
     if rangeChoice >= 1 and rangeChoice <= 3 then
-        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, ({ xi.trust.movementType.MELEE, xi.trust.movementType.MID_RANGE,
-            xi.trust.movementType.LONG_RANGE })[rangeChoice])
+        -- (2026-11-23, Jaymz: 6 and 12 yalms still ate every AoE) mid 15 and far 20 yalms: out of most area attacks,
+        -- and still inside spell and ranged attack reach (about 20 yalms) of the monster
+        mob:setMobMod(xi.mobMod.TRUST_DISTANCE, ({ xi.trust.movementType.MELEE, 15, 20 })[rangeChoice])
     end
 
     -- (2026-11-20, Badtouch) a mate you set to mid or long range with a bow, gun or throwing weapon shoots with it.

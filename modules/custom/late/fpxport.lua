@@ -752,6 +752,14 @@ function M.travelBlock(player)
         return 'ZONE'
     end
 
+    -- XI: Forever Offline (2026-11-23): Steel and Silver hardcore characters never fast travel (custom/late/hardcore.lua)
+    if xi.hardcore and xi.hardcore.noFastTravel and xi.hardcore.noFastTravel(player) then
+        pcall(function()
+            player:printToPlayer('Steel and Silver hardcore characters can\'t fast travel.', M.config.messageChannel)
+        end)
+        return 'ZONE'
+    end
+
     if player:getInstance() ~= nil then
         return 'ZONE'
     end

@@ -19,6 +19,7 @@
 ===========================================================================
 */
 
+#include "utils/hardcoreutils.h"
 #include "blueutils.h"
 
 #include "common/logging.h"
@@ -169,7 +170,7 @@ void TryLearningSpells(CCharEntity* PChar, CMobEntity* PMob)
             if (playerSkillLvl >= skillLvlForSpell - 29)
             {
                 // XI: Forever Offline: BLUE_LEARN_MULTIPLIER scales the chance (1 = retail 33%).
-                auto chanceToLearn = static_cast<int32>((33 + PBlueMage->getMod(xi::Mod::BLUE_LEARN_CHANCE)) * settings::get<float>("map.BLUE_LEARN_MULTIPLIER"));
+                auto chanceToLearn = static_cast<int32>((33 + PBlueMage->getMod(xi::Mod::BLUE_LEARN_CHANCE)) * hardcoreutils::rate(PBlueMage, "map.BLUE_LEARN_MULTIPLIER"));
                 if (xirand::GetRandomNumber(100) < chanceToLearn)
                 {
                     if (charutils::addSpell(PBlueMage, static_cast<uint16>(PSpell->getID())))

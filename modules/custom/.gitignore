@@ -36,3 +36,5 @@ lua/squad_sandbox_spots.lua
 lua/extras_config.lua
 lua/bots_story.txt
 lua/gm_offline.txt
+lua/hardcore_pending.lua
+lua/hardcore_world.lua

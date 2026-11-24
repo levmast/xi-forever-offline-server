@@ -13,6 +13,8 @@
 --     holiday. Off = the era's hours (and the holiday, when main.GUILD_SHOP_HOLIDAYS is on).
 --   main.ANCESTRY_MOOGLES (Yenkei; off by default): the Ancestry Moogles are there (zoneutils.cpp) and change your race,
 --     face, hair and size for free, as often as you like (no 14-day wait, no paid eligibility).
+--   main.DIG_SKILL_RATE (delukard; 1 = the era): scales the digging experience each find gives
+--     (xi.chocoboDig.experiencePerItem, the Phoenix digging module), so digging skill rises faster.
 --   main.TREASURE_WAIT_MULTIPLIER (Rysan, Frost; 1 = the era): scales the 15-60 minute "illusion" wait after a chest or
 --     coffer is opened (main.CHEST_/COFFER_MIN/MAX_ILLUSION_TIME). 0 = every chest and coffer gives its loot.
 -----------------------------------
@@ -173,6 +175,21 @@ do
                 xi.comfortsTreasureBase[key] = base
                 main[key] = math.floor(base * scale)
             end
+        end
+    end
+end
+
+-- Chocobo digging skill speed -----------------------------------------------------
+do
+    local main = xi.settings and xi.settings.main
+    local per  = xi.chocoboDig and xi.chocoboDig.experiencePerItem
+    if main and type(per) == 'table' then
+        xi.comfortsDigBase = xi.comfortsDigBase or {}                     -- the values before scaling (a reload scales once)
+        local scale = math.max(0, tonumber(main.DIG_SKILL_RATE) or 1)
+        for rank, base in pairs(per) do
+            base = xi.comfortsDigBase[rank] or base
+            xi.comfortsDigBase[rank] = base
+            per[rank] = math.floor(base * scale + 0.5)
         end
     end
 end

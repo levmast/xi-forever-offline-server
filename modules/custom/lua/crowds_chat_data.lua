@@ -92,6 +92,17 @@ c.shout.lfm =
     'need {need} for {camp} {range} pt', 'LFM {camp}! {range}, need {need}, pst', 'Seeking {need} for {range} party, {camp}',
     'LFM exp {range} need {need}, leaving now', '{range} pt need {need} {camp}, have tank', 'LF {need} {range} {camp} :)',
 }
+-- (2026-11-23) bots under level 12: nobody partied that low in the era, so no LFP/LFM/"help with BCNM" from them.
+-- { line, lowest level it fits } - what new players really shouted.
+c.shout.newbie =
+{
+    { 'any tips for a new {job}?', 1 }, { 'new here, what level do people start grouping up?', 1 }, { 'how do subjobs work?', 1 },
+    { 'just started, any friendly LS out there?', 1 }, { 'where do I sell crystals?', 1 }, { 'any good solo spots for {job}{lvl}?', 1 },
+    { 'first time on {job}, be gentle :)', 1 }, { 'where can I buy better gear for lv{lvl}?', 1 }, { 'how far is Jeuno from here lol', 1 },
+    { 'what does everyone do for gil at low level?', 1 }, { 'anyone want to duo? {job}{lvl}, soloing is slow', 5 },
+    { 'almost 10, anyone heading to Valkurm soon?', 8 }, { 'is Valkurm safe at 10 or should I wait?', 8 }, { 'soloing to 10 then off to the Dunes', 6 },
+}
+
 c.shout.selling =
 {
     'Selling {item} {price}', 'WTS {item} {price} /t', 'Selling {item}, {price} obo', 'Crafted {item} for sale {price}, pst',

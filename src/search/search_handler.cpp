@@ -21,6 +21,11 @@
 
 #include "search_handler.h"
 
+#include "common/database.h"
+#include "common/earth_time.h"
+#include "common/hardcore_market.h"
+#include "common/ipp.h"
+#include "common/macros.h"
 #include "common/md52.h"
 #include "common/scheduler/task_utils.h"
 #include "common/timer.h"
@@ -42,6 +47,29 @@
 #include "packets/party_list.h"
 #include "packets/search_comment.h"
 #include "packets/search_list.h"
+
+namespace
+{
+// (XI: Forever Offline, 2026-11-23) Is the character using the auction house from this address a Randomized one
+// (char var "[HC]Mode" = 4)? The search server only sees the address, so it takes the character logged in from it;
+// with two characters on one address (dualbox), the one that used the auction house last (the map server writes
+// "[HC]AHSeen" when a character sends an auction house packet, see hardcoreutils::noteAuctionViewer).
+auto randomizedViewer(const std::string& ip) -> bool
+{
+    const auto rset = db::preparedStmt("SELECT COALESCE(m.value, 0) AS hcmode FROM accounts_sessions s "
+                                       "LEFT JOIN char_vars seen ON seen.charid = s.charid AND seen.varname = '[HC]AHSeen' "
+                                       "LEFT JOIN char_vars m ON m.charid = s.charid AND m.varname = '[HC]Mode' "
+                                       "WHERE s.client_addr = ? "
+                                       "ORDER BY COALESCE(seen.value, 0) DESC LIMIT 1",
+                                       str2ip(ip));
+    FOR_DB_SINGLE_RESULT(rset)
+    {
+        return rset->get<int32>("hcmode") == 4;
+    }
+
+    return false;
+}
+} // namespace
 
 SearchHandler::SearchHandler(Scheduler& scheduler, asio::ip::tcp::socket socket, SynchronizedShared<std::map<std::string, uint16_t>>& IPAddressesInUseList, SynchronizedShared<std::unordered_set<std::string>>& IPAddressWhitelist)
 : scheduler_(scheduler)
@@ -537,7 +565,24 @@ void SearchHandler::HandleAuctionHouseRequest()
     }
 
     const CDataLoader PDataLoader;
-    const auto        ItemList = PDataLoader.GetAHItemsToCategory(AHCatID, params);
+    auto              ItemList = PDataLoader.GetAHItemsToCategory(AHCatID, params);
+
+    // (2026-11-23) a Randomized character's own auction house: this period's stock (common/hardcore_market.h)
+    if (randomizedViewer(ipAddress_))
+    {
+        const uint32 now = earth_time::timestamp();
+        for (auto& item : ItemList)
+        {
+            if (!hardcoremarket::inStock(item.ItemID, now))
+            {
+                item.SingleAmount = 0;
+                if (item.StackAmount != static_cast<uint32>(-1))
+                {
+                    item.StackAmount = 0;
+                }
+            }
+        }
+    }
 
     const std::size_t itemListSize = ItemList.size();
     const std::size_t PacketsCount = (itemListSize / 20) + (itemListSize % 20 != 0) + (itemListSize == 0);
@@ -568,8 +613,27 @@ void SearchHandler::HandleAuctionHouseHistory()
     const uint8  stack  = ref<uint8>(buffer_.data(), 0x15);
 
     const CDataLoader      PDataLoader;
-    const auto             HistoryList = PDataLoader.GetAHItemHistory(ItemID, stack != 0);
-    const AuctionHouseItem item        = PDataLoader.GetAHItemFromItemID(ItemID);
+    auto                   HistoryList = PDataLoader.GetAHItemHistory(ItemID, stack != 0);
+    AuctionHouseItem       item        = PDataLoader.GetAHItemFromItemID(ItemID);
+
+    // (2026-11-23) a Randomized character sees this period's stock and prices moved by the item's factor
+    if (randomizedViewer(ipAddress_))
+    {
+        const uint32 now = earth_time::timestamp();
+        if (!hardcoremarket::inStock(ItemID, now))
+        {
+            item.SingleAmount = 0;
+            if (item.StackAmount != static_cast<uint32>(-1))
+            {
+                item.StackAmount = 0;
+            }
+        }
+
+        for (auto& entry : HistoryList)
+        {
+            entry.Price = hardcoremarket::shown(entry.Price, ItemID, now);
+        }
+    }
 
     CAHHistoryPacket PAHPacket = CAHHistoryPacket(item, stack);
 

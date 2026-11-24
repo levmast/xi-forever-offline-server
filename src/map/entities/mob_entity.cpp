@@ -42,6 +42,7 @@
 #include "items.h"
 #include "lua/lua_base_entity.h"
 #include "lua/luautils.h"
+#include "utils/hardcoreutils.h"
 #include "mob_spell_container.h"
 #include "mobskill.h"
 #include "monstrosity.h"
@@ -924,8 +925,8 @@ void CMobEntity::DistributeRewards()
             }
 
             // check for gil (beastmen drop gil, some NMs drop gil)
-            if ((settings::get<float>("map.MOB_GIL_MULTIPLIER") > 0.0f && CanDropGil()) ||
-                (settings::get<float>("map.ALL_MOBS_GIL_BONUS") > 0 &&
+            if ((hardcoreutils::rate(PChar, "map.MOB_GIL_MULTIPLIER") > 0.0 && CanDropGil()) ||
+                (hardcoreutils::rate(PChar, "map.ALL_MOBS_GIL_BONUS") > 0 &&
                  getMobMod(xi::MobMod::GilMax) >= 0)) // Negative value of xi::MobMod::GilMax is used to prevent gil drops in Dynamis/Limbus.
             {
                 charutils::DistributeGil(PChar, this); // TODO: REALISATION MUST BE IN TREASUREPOOL
@@ -1079,6 +1080,24 @@ void CMobEntity::DropItems(CCharEntity* PChar)
     // Adds an item to the treasure pool. Treasure pool will automatically kick out items if the pool is full (prioritizing non rare non ex items)
     auto AddItemToPool = [this, PChar](uint16 ItemID)
     {
+        // XI: Forever Offline (2026-11-23): a Randomized character's claim turns a drop into a random item that fits
+        // the area (or the NM pool); the game's own items (quest items, crystals, seals, Rare/Ex) are left alone
+        if (hardcoreutils::mode(PChar) == 4)
+        {
+            if (sol::protected_function fn = hardcoreutils::randomLootFunction(); fn.valid())
+            {
+                auto result = fn(CLuaBaseEntity(PChar), CLuaBaseEntity(this), ItemID);
+                if (result.valid())
+                {
+                    const sol::optional<uint16> swapped = result.get<sol::optional<uint16>>();
+                    if (swapped && *swapped != 0)
+                    {
+                        ItemID = *swapped;
+                    }
+                }
+            }
+        }
+
         PChar->PTreasurePool->addItem(ItemID, this);
         PAI->EventHandler.triggerListener("TREASUREPOOL", CLuaBaseEntity(this), CLuaBaseEntity(PChar), ItemID);
     };
@@ -1160,7 +1179,7 @@ void CMobEntity::DropItems(CCharEntity* PChar)
             }
 
             // Determine if this group should drop an item.
-            if (groupDropRate > 0 && (1 + xirand::GetRandomNumber(10000)) <= groupDropRate * settings::get<float>("map.DROP_RATE_MULTIPLIER"))
+            if (groupDropRate > 0 && (1 + xirand::GetRandomNumber(10000)) <= groupDropRate * hardcoreutils::rate(PChar, "map.DROP_RATE_MULTIPLIER"))
             {
                 // Each item in the group is given its own weight range which is the previous value to the previous value + item.DropRate
                 // Such as 2 items with drop rates of 200 and 800 would be 0-199 and 200-999 respectively
@@ -1189,7 +1208,7 @@ void CMobEntity::DropItems(CCharEntity* PChar)
                 itemDropRate = thDropRateFunction(m_THLvl, itemDropRate);
             }
 
-            if (itemDropRate > 0 && (1 + xirand::GetRandomNumber(10000)) <= itemDropRate * settings::get<float>("map.DROP_RATE_MULTIPLIER"))
+            if (itemDropRate > 0 && (1 + xirand::GetRandomNumber(10000)) <= itemDropRate * hardcoreutils::rate(PChar, "map.DROP_RATE_MULTIPLIER"))
             {
                 AddItemToPool(item.ItemID);
             }

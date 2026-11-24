@@ -63,6 +63,7 @@
 #include "items/transactions/item_claim.h"
 #include "itemutils.h"
 #include "lua/luautils.h"
+#include "utils/hardcoreutils.h"
 #include "packets/c2s/0x110_fishing_2.h"
 #include "packets/s2c/0x029_battle_message.h"
 #include "status_effect_container.h"
@@ -2013,7 +2014,7 @@ void FishingSkillup(CCharEntity* PChar, uint8 catchLevel, uint8 successType)
     maxChance = std::max(4, distMod + lowerLevelBonus - skillLevelPenalty);
 
     // Configuration multiplier.
-    maxChance = maxChance * settings::get<float>("map.FISHING_SKILL_MULTIPLIER");
+    maxChance = maxChance * hardcoreutils::rate(PChar, "map.FISHING_SKILL_MULTIPLIER");
 
     // Not in City bonus
     CZone* PZone = zoneutils::GetZone(PChar->getZone());

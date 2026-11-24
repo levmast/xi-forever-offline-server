@@ -15,6 +15,15 @@ if not packOk or type(pack) ~= 'table' then
     pack = nil
 end
 local PACK_SHARE = 0.7 -- share of the lines (not taken from the AI pool) that come from the pack
+-- (2026-11-23) selling / buying shouts are real offers (bots_trade.lua: the item in a bot's bazaar, or a bot that buys
+-- from yours). Without it there are no selling / buying shouts at all, rather than made-up ones.
+local tradeOk, trade = pcall(require, 'modules/custom/lua/bots_trade')
+if not tradeOk or type(trade) ~= 'table' then
+    trade = nil
+end
+local PARTY_LVL = 12 -- below this a bot does not look for a party (nobody partied at 1-11 in the era)
+local SUB_LVL   = 18 -- the support job comes at 18
+local TRADE_GROUP = { selling = true, buying = true }
 
 local chat = {}
 local env            -- set by chat.setup: cfg, data, makeName, dist2
@@ -40,21 +49,21 @@ local AMOUNT = { quiet = 2.0, normal = 1.0, busy = 0.5 }
 local function profile(zoneId)
     local zd = env.data.zones[zoneId]
     if zd and zd.scale and zd.scale < 0.5 then -- outposts: no shouts, more camp chatter
-        return { shout = nil, say = { 25, 50 }, weights = {}, outpost = true }
+        return { shout = nil, say = { 25, 50 }, weights = {}, outpost = true, kind = 'outpost' }
     end
 
     if JEUNO[zoneId] then
-        return { shout = { 30, 45 }, say = { 35, 70 }, ghost = 0.25,
+        return { shout = { 30, 45 }, say = { 35, 70 }, ghost = 0.25, kind = 'jeuno',
             weights = { lfp = 26, lfp_heal = 6, lfm = 24, selling = 14, buying = 6, ls = 8, help = 8, endgame = 8, ai = 6 } }
     elseif SMALL[zoneId] then
-        return { shout = { 180, 300 }, say = { 45, 90 },
+        return { shout = { 180, 300 }, say = { 45, 90 }, kind = 'small',
             weights = { lfp = 20, lfm = 10, selling = 25, buying = 15, ls = 5, help = 10, ai = 15 } }
     elseif zoneId == 50 then -- Aht Urhgan Whitegate: the ToAU hub
-        return { shout = { 50, 80 }, say = { 35, 70 }, ghost = 0.15,
+        return { shout = { 50, 80 }, say = { 35, 70 }, ghost = 0.15, kind = 'whitegate',
             weights = { lfp = 22, lfm = 22, selling = 14, buying = 6, ls = 6, help = 8, endgame = 14, ai = 8 } }
     end
 
-    return { shout = { 60, 120 }, say = { 35, 70 },
+    return { shout = { 60, 120 }, say = { 35, 70 }, kind = 'city',
         weights = { lfp = 24, lfp_heal = 4, lfm = 16, selling = 22, buying = 8, ls = 8, help = 12, ai = 6 } }
 end
 
@@ -186,7 +195,11 @@ local function fill(text, who, zoneId, playerName)
 
     who.sub = sub
     local item = pick(env.data.sell or {}) or { 'Bronze Ingot', 300, 1 }
-    local lo, hi = math.max(1, lvl - rnd(1, 3)), math.min(75, lvl + rnd(1, 3))
+    local lo, hi = math.max(lvl >= 10 and 10 or 1, lvl - rnd(1, 3)), math.min(75, lvl + rnd(1, 3))
+    if lvl < SUB_LVL then
+        -- no support job yet: "WAR14/NIN7" never happened
+        text = text:gsub('%s*/%s*{sub}{sublvl}', ''):gsub('%s*/%s*{sub}', '')
+    end
     local fields = {
         job = job, lvl = tostring(lvl), sub = sub, sublvl = tostring(math.floor(lvl / 2)),
         camp = pick(byLevel(T.camps, lvl)) or 'Valkurm', range = lo .. '-' .. hi, need = pick(T.needs),
@@ -299,8 +312,71 @@ local function packLine(cat, who, zoneId)
     return ok and line or nil
 end
 
+local rawShoutLine
+
+-- a line that does not fit this speaker's level (a party shout from a level 4, "lfp 1-5", a subjob at 12)
+local PARTY_WORDS = { 'lfp', 'lfm', 'party', ' pt', 'pt ', 'exp', 'merit', 'lf%d', 'need %d more', 'looking for a group' }
+local function oddFor(line, lvl)
+    local l = ' ' .. string.lower(line or '') .. ' '
+    l = l:gsub('%f[%a]cop %d+%-%d+', 'cop'):gsub('%f[%a]toau %d+%-%d+', 'toau'):gsub('%f[%a]zm%d+', 'zm') -- (mission numbers)
+    if lvl < PARTY_LVL then
+        for _, w in ipairs(PARTY_WORDS) do
+            if l:find(w) then
+                return true
+            end
+        end
+    end
+
+    for a, b in l:gmatch('(%d+)%s*%-%s*(%d+)') do
+        a, b = tonumber(a), tonumber(b)
+        if a and b and b > a and b <= 75 and (a < 10 or math.abs(lvl - a) > 6) then
+            return true -- a level range nobody partied at, or far from the speaker's own level
+        end
+    end
+
+    if lvl < SUB_LVL and (l:find('got my sub') or l:find('subjob!')) then
+        return true
+    end
+
+    return false
+end
+chat.oddFor = oddFor
+
+local function newbieLine(who, zoneId, lvl)
+    local list = {}
+    for _, e in ipairs(T.shout.newbie or {}) do
+        if lvl >= (e[2] or 1) then
+            list[#list + 1] = e[1]
+        end
+    end
+
+    return fill(pick(list) or 'any tips for a new {job}?', who, zoneId)
+end
+
 function chat.shoutLine(who, zoneId, group)
     local lvl = chat.levelOf(who)
+    if lvl < PARTY_LVL and (group == 'lfp' or group == 'lfp_heal' or group == 'lfm' or group == 'help' or group == 'endgame') then
+        return newbieLine(who, zoneId, lvl)
+    end
+
+    if TRADE_GROUP[group] then
+        group = 'lfp' -- (real offers only: bots_trade.lua, from onBotThink)
+        if lvl < PARTY_LVL then
+            return newbieLine(who, zoneId, lvl)
+        end
+    end
+
+    for _ = 1, 4 do
+        local line = rawShoutLine(who, zoneId, group, lvl)
+        if line and not oddFor(line, lvl) then
+            return line
+        end
+    end
+
+    return lvl < PARTY_LVL and newbieLine(who, zoneId, lvl) or fill(pick(T.shout.lfp), who, zoneId)
+end
+
+rawShoutLine = function(who, zoneId, group, lvl)
     if group == 'endgame' and lvl < 75 then
         group = 'lfp'
     end
@@ -504,6 +580,13 @@ function chat.onBotThink(zoneId, speakers, players, speak)
     local prof = profile(zoneId)
     local z = botZones[zoneId] or {}
     botZones[zoneId] = z
+    if trade then
+        local okT, err = pcall(trade.tick, zoneId, speakers, players, speak)
+        if not okT then
+            print('[crowds] trade tick: ' .. tostring(err))
+        end
+    end
+
     z.nextShout = z.nextShout or (now + rnd(10, 30))
     z.nextSay = z.nextSay or (now + rnd(10, 25))
     local function who(e)
@@ -542,7 +625,26 @@ function chat.onBotThink(zoneId, speakers, players, speak)
                 group = 'lfp' -- (only a member recruits for its own linkshell)
             end
 
-            local line = chat.shoutLine(w, zoneId, group)
+            local line
+            if TRADE_GROUP[group] then
+                -- a real offer (its bazaar, or buying from yours), or nothing of the kind: then something else
+                if trade and (w.lvl or 1) >= 5 then
+                    local okO, l = pcall(trade.newOffer, e, group, zoneId, trade.cap(prof.kind))
+                    line = okO and l or nil
+                    if not okO then
+                        print('[crowds] trade offer: ' .. tostring(l))
+                    end
+                end
+
+                if not line then
+                    group = pickWeighted(prof.weights)
+                    if TRADE_GROUP[group] or (group == 'ls' and not w.ls) then
+                        group = 'help'
+                    end
+                end
+            end
+
+            line = line or chat.shoutLine(w, zoneId, group)
             if line and line ~= '' and recentCheck(z, line) then
                 speak(e, 1, line)
                 spoke(e:getName())

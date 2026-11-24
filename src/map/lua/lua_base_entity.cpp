@@ -162,6 +162,7 @@
 #include "utils/battleutils.h"
 #include "utils/blueutils.h"
 #include "utils/charutils.h"
+#include "utils/hardcoreutils.h"
 #include "utils/dboxutils.h"
 #include "utils/guildutils.h"
 #include "utils/instanceutils.h"
@@ -20040,6 +20041,25 @@ void CLuaBaseEntity::addTreasure(uint16 itemID, const sol::object& arg1, const s
     if (itemID == 0)
     {
         return;
+    }
+
+    // (XI: Forever Offline, 2026-11-23) a Randomized character's treasure chests and battlefield crates: Lua picks
+    // what comes out instead (xi.hardcore.randomTreasure in custom/late/hardcore.lua; quest items, crystals and
+    // Rare/Ex items stay what they are)
+    if (hardcoreutils::mode(PChar) == 4)
+    {
+        if (sol::protected_function fn = hardcoreutils::hardcoreFunction("randomTreasure"); fn.valid())
+        {
+            auto result = fn(CLuaBaseEntity(PChar), arg1, itemID);
+            if (result.valid())
+            {
+                const sol::optional<uint16> swapped = result.get<sol::optional<uint16>>();
+                if (swapped && *swapped != 0)
+                {
+                    itemID = *swapped;
+                }
+            }
+        }
     }
 
     if (PChar->PTreasurePool != nullptr)

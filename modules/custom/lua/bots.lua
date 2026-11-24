@@ -1726,6 +1726,17 @@ xi.bots.onTell = function(bot, t)
         end
     end
 
+    -- (2026-11-23) about its selling / buying offer (bots_trade.lua): it answers about the real item and price
+    if type(t) == 'table' then
+        local okT, trade = pcall(require, 'modules/custom/lua/bots_trade')
+        if okT and type(trade) == 'table' then
+            local okH, handled = pcall(trade.onTell, bot, t.from, t.text or '')
+            if okH and handled then
+                return
+            end
+        end
+    end
+
     if linkshells and type(t) == 'table' and linkshells.askedPearl(bot, t.from, t.text) then
         return -- (it sent you a pearl, and said so)
     end

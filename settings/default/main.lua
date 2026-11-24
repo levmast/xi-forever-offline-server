@@ -345,6 +345,7 @@ xi.settings.main =
     GUILD_SHOPS_ALWAYS_STOCKED   = 0,     -- 1 = on, 0 = off (the era). Guild shops never run out of the items they sell.
     GUILD_SHOPS_ALWAYS_OPEN      = 1,     -- 1 = on, 0 = off (the era). Guild shops have no closing hours and no weekly holiday.
     EPHEMERAL_MOOGLES            = 1,     -- 1 = on (default), 0 = off. The crafting guilds' Ephemeral Moogles (Seekers of Adoulin) keep your crystals. src/map/utils/zoneutils.cpp
+    DIG_SKILL_RATE               = 1.000, -- Multiplies the chocobo digging experience from each find (1 = the era, 2 = digging skill rises twice as fast). modules/custom/late/comforts.lua
     ANCESTRY_MOOGLES             = 0,     -- 1 = on, 0 = off (default). The Ancestry Moogles in Port San d'Oria, Port Bastok and Windurst Walls (Seekers of Adoulin) change your race, face, hair and size, free and as often as you like. src/map/utils/zoneutils.cpp, modules/custom/late/comforts.lua
     TREASURE_WAIT_MULTIPLIER     = 1.000, -- Multiplies the wait after a treasure chest or coffer is opened before one in that area gives loot again (the 15-60 minute "illusion"; 1 = the era, 0 = none). modules/custom/late/comforts.lua
     SQUAD_UNLIMITED_JUICE        = 0,     -- 1 = on, 0 = off (default). A squad mate with none of the juices you gave it drinks one for its level, free. modules/custom/lua/squad_juice.lua
