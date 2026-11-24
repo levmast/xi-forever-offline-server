@@ -1,11 +1,10 @@
 -----------------------------------
--- FFXI Offline: Fields of Valor / Grounds of Valor without the buffs.
+-- FFXI Offline: Fields of Valor / Grounds of Valor without the prowess buffs.
 --
 -- Pages, tabs, gil and the experience reward work as normal, and so do the book's teleports
--- (Repatriation, Homing Instinct) and Cancel regime.
+-- (Repatriation, Homing Instinct), Cancel regime and the Field Support buffs bought with tabs: Circumspection
+-- (sneak/invisible), Reraise I-III, Regen, Refresh, Protect, Shell, Haste and the food options (levi, 2026-11-24).
 -- Turned off:
---   * Field Support buffs bought with tabs: Circumspection (sneak/invisible), Reraise I-III, Regen, Refresh,
---     Protect, Shell, Haste and the food options.
 --   * Trust cipher purchases (Koru-Moru, Sakura): Trusts are not part of this server.
 --   * The random Grounds of Valor prowess buffs (casket rate, skill-up rate, crystal yield, treasure hunter,
 --     attack speed, HP/MP, accuracy, attack, magic, cure potency, weapon skill damage, killer) and their lines.
@@ -25,16 +24,10 @@ local blocked =
 {
     [xi.regime.type.FIELDS] =
     {
-        [ 37] = true, [ 53] = true, [ 69] = true, [ 85] = true, [101] = true,  -- reraise, regen, refresh, protect, shell
-        [117] = true, [133] = true, [149] = true, [165] = true,               -- food
         [181] = true, [197] = true,                                           -- trust ciphers
     },
     [xi.regime.type.GROUNDS] =
     {
-        [ 36] = true,                                                         -- circumspection
-        [ 68] = true, [ 84] = true, [100] = true,                             -- reraise I-III
-        [116] = true, [132] = true, [148] = true, [164] = true, [180] = true, -- regen, refresh, protect, shell, haste
-        [196] = true, [212] = true, [228] = true, [244] = true, [260] = true, [276] = true, -- food
         [292] = true, [308] = true,                                           -- trust ciphers
     },
 }
