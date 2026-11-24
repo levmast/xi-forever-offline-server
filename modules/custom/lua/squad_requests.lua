@@ -177,7 +177,27 @@ local function kindOf(spellId)
     end
 
     local ok, kind = pcall(f, spellId)
-    return ok and kind or ''
+    kind = ok and kind or ''
+    -- (2026-11-24, levi: "telling a squad mate to cast barwatera doesn't work anymore") Barwatera, Protectra, Shellra and the
+    -- other -ra spells can only be aimed at their caster, but they cover everyone around it: a party spell, not a self-only one
+    if kind == 'self' and R.areaAroundCaster(spellId) then
+        kind = 'party'
+    end
+
+    return kind
+end
+
+-- a spell that goes off around its caster (spell_list AOE 1, SPELLAOE_RADIAL): Barwatera, Protectra, Shellra, ...
+function R.areaAroundCaster(spellId)
+    local ok, aoe = pcall(function()
+        return GetSpell(spellId):getAoE()
+    end)
+
+    return ok and aoe == 1
+end
+
+xi.squad.areaAroundCaster = function(spellId)
+    return R.areaAroundCaster(spellId)
 end
 
 -----------------------------------
