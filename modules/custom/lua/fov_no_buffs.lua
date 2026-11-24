@@ -1,14 +1,12 @@
 -----------------------------------
--- FFXI Offline: Fields of Valor / Grounds of Valor without the prowess buffs.
+-- FFXI Offline: Fields of Valor / Grounds of Valor house rules (blocked book options, page exp cap).
 --
 -- Pages, tabs, gil and the experience reward work as normal, and so do the book's teleports
 -- (Repatriation, Homing Instinct), Cancel regime and the Field Support buffs bought with tabs: Circumspection
--- (sneak/invisible), Reraise I-III, Regen, Refresh, Protect, Shell, Haste and the food options (levi, 2026-11-24).
+-- (sneak/invisible), Reraise I-III, Regen, Refresh, Protect, Shell, Haste and the food options, and the random
+-- Grounds of Valor prowess buffs a finished page can give (levi, 2026-11-24; STRIP_PROWESS = true turns those off again).
 -- Turned off:
 --   * Trust cipher purchases (Koru-Moru, Sakura): Trusts are not part of this server.
---   * The random Grounds of Valor prowess buffs (casket rate, skill-up rate, crystal yield, treasure hunter,
---     attack speed, HP/MP, accuracy, attack, magic, cure potency, weapon skill damage, killer) and their lines.
---     The repeat-clear counter that raises the page reward (up to double) stays.
 -- Page exp: multiplied by "Experience from Fields/Grounds pages" on the launcher's Rates tab (0.125 = 1/8),
 -- then capped like one era kill (200 up to level 50, 250 at 51-60, 300 at 61-75).
 -- Squad mates out with you get the page's exp too (capped for their level); needs squad.lua 1.7+ (xi.squad.grantExp).
@@ -67,8 +65,13 @@ local function eraCap(level)
     return math.floor(cap * rate)
 end
 
+-- true: the random Grounds prowess buffs (casket rate, skill-up rate, crystal yield, treasure hunter, attack speed,
+-- HP/MP, accuracy, attack, magic, cure potency, weapon skill damage, killer) and their lines are not given.
+-- The repeat-clear counter that raises the page reward (up to double) stays either way.
+local STRIP_PROWESS = false
+
 local prowessBuff, prowessMessage = {}, {}
-for _, name in ipairs(prowessEffects) do
+for _, name in ipairs(STRIP_PROWESS and prowessEffects or {}) do
     local effect = xi.effect[name]
     if effect then
         prowessBuff[effect]          = true
@@ -78,8 +81,8 @@ end
 
 -- The page code is run with a stand-in for the player that forwards everything to the real one, except:
 --   addExp:          held back, then capped and given to you and your squad mates below
---   addStatusEffect: the random Grounds prowess buffs are not given (the repeat-clear counter is)
---   messageBasic:    their "prowess" lines are not shown
+--   addStatusEffect: with STRIP_PROWESS, the random Grounds prowess buffs are not given (the repeat-clear counter is)
+--   messageBasic:    with STRIP_PROWESS, their "prowess" lines are not shown
 -- The stand-in must never reach the engine itself: arguments that are the stand-in (or a table whose origin is the
 -- stand-in, e.g. the Grounds repeat-clear counter's { power = n, origin = player }) are swapped for the real player.
 -- Before this the counter's addStatusEffect failed and the page stopped right after "completed": no reward, and the
