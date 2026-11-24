@@ -4,6 +4,7 @@
 --   party has casters   behind the casters, on their far side from the foe, at least `safe` yalms from the foe, pulled in until
 --                       every caster is within `range` yalms (songs reach about 9 to 10)
 --   no casters          the party middle, at least `mid` yalms from the foe
+--                       (retail area range: and where every fighter is within `range` of her, so each one hears the song)
 -- Out of a fight she is released to the stock AI.
 -- Check it: !bard debug prints where she goes and how far; (debug on) if she does not close in for 5 passes it says NOT MOVING and what holds her.
 --   Automatic: it starts by itself when a bard mate is switched on (Actions ON in the Squads window, or the actions pass).
@@ -20,7 +21,8 @@ local m = Module:new('squad_bard_walk')
 SQUAD_BARD_WALK = SQUAD_BARD_WALK or {}
 local W = SQUAD_BARD_WALK
 W.cfg = W.cfg or {}
-for k, v in pairs({ safe = 14, behind = 3, range = 9, mid = 5, arrive = 1.5, every = 1000, stuck = 5, mageSwitch = false, retarget = 5, castGate = true }) do
+-- (v0.3.3a) mageSwitch is ON by default: a party with casters gets the caster spot (the group switch below). SQUAD_BARD_WALK.cfg.mageSwitch = false puts a bard back beside the fighters only.
+for k, v in pairs({ safe = 14, behind = 3, range = 9, mid = 5, arrive = 1.5, every = 1000, stuck = 5, mageSwitch = true, retarget = 5, castGate = true }) do
     if W.cfg[k] == nil then W.cfg[k] = v end
 end
 local C = W.cfg
@@ -61,6 +63,73 @@ local function castGate(mob, canCast)
     end
 end
 
+-- XI: Forever Offline: is the song reach checked? Songs reach only the members inside their radius when the area range is retail
+-- (map.TRUST_AOE_RANGE, the default); on 'extended' (the stock server) every mate hears every song, so the walk stays as it was.
+-- Tune live: SQUAD_BARD_WALK.cfg.songReach = false (never check)
+function W.reachOn()
+    if C.songReach == false then return false end
+    local ok, v = pcall(function() return xi.settings.map.TRUST_AOE_RANGE end)
+    return not (ok and v == 'extended')
+end
+
+-- Where to stand so that every fighter in `pool` is within `range` of her, as close as possible to `s0` (the spot she would
+-- take anyway) and not nearer the foe than `mid`. nil = `s0` already reaches everyone, nothing to change. When no spot reaches
+-- everyone (the fighters are spread wider than two songs), the spot that keeps the farthest one nearest (still outside `mid`
+-- when she can) is taken: she sings to as many as she can, never worse than the centroid.
+function W.reachSpot(pool, fp, s0)
+    local pts = {}
+    for _, p in ipairs(pool) do pts[#pts + 1] = p:getPos() end
+    if #pts == 0 then return nil end
+
+    local function worst(s)
+        local w = 0
+        for _, q in ipairs(pts) do
+            local dd = flat(s, q)
+            if dd > w then w = dd end
+        end
+
+        return w
+    end
+
+    local R = C.range
+    if worst(s0) <= R then return nil end
+
+    local x0, x1, z0, z1 = math.huge, -math.huge, math.huge, -math.huge
+    for _, q in ipairs(pts) do
+        x0, x1 = math.min(x0, q.x), math.max(x1, q.x)
+        z0, z1 = math.min(z0, q.z), math.max(z1, q.z)
+    end
+
+    local bestIn, bestInD = nil, math.huge   -- reaches everyone, outside `mid`: the one nearest to s0
+    local bestAny, bestAnyW = nil, math.huge -- the smallest farthest distance, outside `mid`
+    local bestFree, bestFreeW = nil, math.huge -- the same without the `mid` limit
+    local step = 1
+    local x = x0 - R
+    while x <= x1 + R do
+        local z = z0 - R
+        while z <= z1 + R do
+            local s = { x = x, z = z }
+            local w = worst(s)
+            if flat(s, fp) >= C.mid then
+                if w <= R then
+                    local dd = flat(s, s0)
+                    if dd < bestInD then bestIn, bestInD = s, dd end
+                end
+
+                if w < bestAnyW then bestAny, bestAnyW = s, w end
+            elseif w < bestFreeW then
+                bestFree, bestFreeW = s, w
+            end
+
+            z = z + step
+        end
+
+        x = x + step
+    end
+
+    return bestIn or bestAny or bestFree
+end
+
 -- the spot: group 0 = next to the fighters (the DDs and the tank): where she goes first and sings March and Minuet.
 --            group 1 = behind the casters: only while a caster is low on MP (Ballad), then she returns to the fighters.
 function W.spot(bard, others, foe, group)
@@ -84,9 +153,15 @@ function W.spot(bard, others, foe, group)
 
     local ux, uz = (c.x - fp.x) / d, (c.z - fp.z) / d
     if group ~= 1 or #mages == 0 then
-        -- beside the fighters, never closer to the foe than `mid`
-        if d >= C.mid then return c end
-        return { x = fp.x + ux * C.mid, z = fp.z + uz * C.mid }
+        -- beside the fighters, never closer to the foe than `mid`; and, under the retail area range, where every fighter is
+        -- inside the song's reach when the party allows it (a song lands only on members within `range` of her)
+        local s0 = d >= C.mid and c or { x = fp.x + ux * C.mid, z = fp.z + uz * C.mid }
+        if W.reachOn() then
+            local s = W.reachSpot(pool, fp, s0)
+            if s ~= nil then return s end
+        end
+
+        return s0
     end
 
     local function ok(s)
@@ -143,7 +218,7 @@ local function step(player)
 
     for _, bard in ipairs(party) do
         if bard:getObjType() == xi.objType.TRUST and bard:getLocalVar('SQUAD_ID') ~= 0 and bard:getMainJob() == BRD then
-            if foe == nil or not bard:isAlive() or bard:getZoneID() ~= player:getZoneID() or bard:getLocalVar('SQUAD_ACT_OFF') == 1 then
+            if foe == nil or not bard:isAlive() or bard:getZoneID() ~= player:getZoneID() or bard:getLocalVar('SQUAD_ACT_OFF') == 1 or (tonumber(player:getCharVar('ADDON_OWN_' .. bard:getLocalVar('SQUAD_ID'))) or 0) > 0 then -- SQUAD_GUARD v1 bard_walk_gate
                 hold(bard, false)
                 castGate(bard, true)
                 bard:setLocalVar('SQUAD_BW_HAS', 0)

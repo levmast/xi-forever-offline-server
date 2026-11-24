@@ -41,6 +41,23 @@
 #include "utils/itemutils.h"
 #include "utils/puppetutils.h"
 
+namespace
+{
+
+// XI: Forever Offline: the player whose party an automaton's master belongs to: the master herself, or the player a squad mate (a trust) serves.
+// The party calls below were written for a master that is always a player.
+auto partyOwner(CBattleEntity* PMaster) -> CCharEntity*
+{
+    if (IsSquadMate(PMaster) && PMaster->PMaster != nullptr)
+    {
+        return static_cast<CCharEntity*>(PMaster->PMaster);
+    }
+
+    return static_cast<CCharEntity*>(PMaster);
+}
+
+} // namespace
+
 CAutomatonController::CAutomatonController(CAutomatonEntity* PPet)
 : CPetController(PPet)
 , PAutomaton(PPet)
@@ -498,7 +515,7 @@ auto CAutomatonController::TryHeal(const CurrentManeuvers& maneuvers) -> bool
         if (PMob)
         {
             uint16 highestEnmity = 0;
-            static_cast<CCharEntity*>(PAutomaton->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
+            partyOwner(PAutomaton->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
             {
                 if (PMember->id != PAutomaton->PMaster->id)
                 {
@@ -514,7 +531,7 @@ auto CAutomatonController::TryHeal(const CurrentManeuvers& maneuvers) -> bool
         }
         else
         {
-            static_cast<CCharEntity*>(PAutomaton->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
+            partyOwner(PAutomaton->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
             {
                 if (PMember->id != PAutomaton->PMaster->id && distance(PAutomaton->loc.p, PAutomaton->PMaster->loc.p) < 20)
                 {
@@ -1390,7 +1407,7 @@ auto CAutomatonController::TryEnhance() -> bool
     {
         members = PAutomaton->PMaster->PParty->members.size();
         // clang-format off
-        static_cast<CCharEntity*>(PAutomaton->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
+        partyOwner(PAutomaton->PMaster)->ForPartyWithTrusts([&](CBattleEntity* PMember)
         {
             if (PMember->id != PAutomaton->PMaster->id && distance(PAutomaton->loc.p, PMember->loc.p) < 20)
             {

@@ -99,6 +99,14 @@ local function alive(e)
     return ok and res
 end
 
+-- (2026-11-23, Stalwart Shield: the server crashed in isAlive on a "HorroSlime") the monster a field party fights is
+-- looked up again by its id every time. A kept handle outlives a monster the game deletes (Horro's slimes, and any
+-- other monster made while the server runs, are deleted when they run away or are cleared), and using it then reads
+-- freed memory. GetMobByID gives nil for a deleted one.
+local function fightTarget(party)
+    return party.targetId and GetMobByID(party.targetId) or nil
+end
+
 local function memberEntity(m)
     if m.dead then
         return nil
@@ -500,7 +508,7 @@ local function mpp(e)
 end
 
 local function startFight(party, target)
-    party.target = target
+    party.target = nil -- (only the id is kept: see fightTarget)
     party.targetId = target:getID()
     party.state = 'fight'
     party.fightStart = now()
@@ -518,8 +526,10 @@ local function startFight(party, target)
     -- melee join once the tank holds it
     te = te or memberEntity(aliveMembers(party)[1])
     if te then
+        local targetId = party.targetId
         te:timer(2500, function()
-            if party.over or party.targetId ~= target:getID() or not alive(target) then
+            local target = fightTarget(party)
+            if party.over or party.targetId ~= targetId or not alive(target) then
                 return
             end
 
@@ -560,7 +570,7 @@ local function healerTurn(party, healer)
     end
 
     -- Dia / Paralyze / Slow on the monster early in the fight (WHM does Dia, the support the rest)
-    local target = party.target
+    local target = fightTarget(party)
     if target and alive(target) and not party.debuffed.dia then
         local id = spellFor(healer.job, party.lvl, { 'dia_ii', 'dia' })
         if id then
@@ -580,7 +590,7 @@ local function supportTurn(party, sup)
         return
     end
 
-    local target = party.target
+    local target = fightTarget(party)
     if sup.job == 'BRD' then
         if now() - party.songs > 120 then
             party.songs = now()
@@ -659,7 +669,7 @@ end
 
 local function tankTurn(party, tank)
     local te = memberEntity(tank)
-    local target = party.target
+    local target = fightTarget(party)
     if not te or not target or not alive(target) then
         return
     end
@@ -705,7 +715,7 @@ local function closingWs(list, props)
 end
 
 local function ddTurn(party)
-    local target = party.target
+    local target = fightTarget(party)
     if not target or not alive(target) then
         return
     end
@@ -780,7 +790,7 @@ end
 
 local function nukerTurn(party, nuker)
     local ne = memberEntity(nuker)
-    local target = party.target
+    local target = fightTarget(party)
     if not ne or not target or not alive(target) or now() < party.nukeBusy then
         return
     end
@@ -1064,7 +1074,7 @@ brain = function(party)
             end
         end
     elseif party.state == 'fight' then
-        local target = party.target
+        local target = fightTarget(party)
         if not alive(target) then
             party.kills = party.kills + 1
             local nxt = nextTarget(party)

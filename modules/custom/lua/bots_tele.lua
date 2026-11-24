@@ -715,6 +715,17 @@ end
 
 T.playerShout = playerShout
 
+-- (v0.3.3, G11) what a bot white mage asks for the Teleport of this spell, the same price a shout gets (gil), and the name of the crag; nil for any other spell
+function T.priceForSpell(spellId)
+    for _, d in pairs(DEST) do
+        if xi.magic.spell[d.spell] == spellId then
+            return math.random(d.price[1], d.price[2]) * 100, d.name
+        end
+    end
+
+    return nil
+end
+
 -- (for tests and !bots: what is going on)
 function T.status()
     return offers, deals

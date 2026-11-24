@@ -267,4 +267,6 @@ target_sources(xi_map_packets_c2s PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/0x11c_party_request.h
     ${CMAKE_CURRENT_SOURCE_DIR}/0x11d_jump.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/0x11d_jump.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/0x1f0_addon_channel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/0x1f0_addon_channel.h
 )

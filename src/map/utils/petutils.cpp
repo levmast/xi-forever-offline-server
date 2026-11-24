@@ -28,6 +28,7 @@
 #include "enmity_container.h"
 #include "entities/automaton_entity.h"
 #include "entities/mob_entity.h"
+#include "entities/trust_entity.h"
 #include "grades.h"
 #include "items/item_weapon.h"
 #include "job_points.h"
@@ -401,13 +402,20 @@ void LoadJugStats(CPetEntity* PPet, Pet_t* petStats)
     PPet->stats.CHR = (uint16)(fCHR + mCHR + sCHR);
 }
 
-void LoadAutomatonStats(CCharEntity* PMaster, CPetEntity* PPet, Pet_t* petStats, uint8 mlvl)
+// XI: Forever Offline: the automaton's numbers come from `info`: the player's own automatonInfo_, or a squad Puppetmaster mate's own record (never her master's)
+void LoadAutomatonStats(CBattleEntity* PMaster, AutomatonInfo& info, CPetEntity* PPet, Pet_t* petStats, uint8 mlvl)
 {
-    auto& tempSkills = puppetutils::CalculateAutomatonSkills(PMaster, mlvl);
-    auto& tempStats  = PMaster->automatonInfo_.automatonStats;
-    auto& tempHealth = PMaster->automatonInfo_.automatonHealth;
+    auto* PCharMaster = dynamic_cast<CCharEntity*>(PMaster);
+    auto& tempSkills  = PCharMaster != nullptr ? puppetutils::CalculateAutomatonSkills(PCharMaster, mlvl) : puppetutils::CalculateSquadAutomatonSkills(info, mlvl);
+    auto& tempStats   = info.automatonStats;
+    auto& tempHealth  = info.automatonHealth;
 
-    const auto frame      = static_cast<uint8>(PMaster->getAutomatonFrame());
+    const auto hasAttachment = [&info](const uint8 attachment)
+    {
+        return std::ranges::contains(info.equip.attachments, attachment);
+    };
+
+    const auto frame      = static_cast<uint8>(info.equip.frame);
     const auto statsLevel = std::min<uint8>(mlvl, 99);
 
     const auto maybeFrameStats = lua["xi"]["pets"]["automaton"]["frameStats"].get<sol::optional<sol::table>>();
@@ -448,10 +456,10 @@ void LoadAutomatonStats(CCharEntity* PMaster, CPetEntity* PPet, Pet_t* petStats,
     tempHealth.mp    = tempHealth.maxmp;
 
     // Handle Auto-Repair Kits, HP boost provided is shown in the automaton equipment menu, which means it needs to be calculated here.
-    const bool hasAutoRepairKit    = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKit));
-    const bool hasAutoRepairKitII  = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKitII));
-    const bool hasAutoRepairKitIII = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKitIII));
-    const bool hasAutoRepairKitIV  = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKitIV));
+    const bool hasAutoRepairKit    = hasAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKit));
+    const bool hasAutoRepairKitII  = hasAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKitII));
+    const bool hasAutoRepairKitIII = hasAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKitIII));
+    const bool hasAutoRepairKitIV  = hasAttachment(static_cast<uint8>(AutomatonAttachment::AutoRepairKitIV));
 
     if (hasAutoRepairKit || hasAutoRepairKitII || hasAutoRepairKitIII || hasAutoRepairKitIV)
     {
@@ -499,7 +507,7 @@ void LoadAutomatonStats(CCharEntity* PMaster, CPetEntity* PPet, Pet_t* petStats,
                 return;
             }
 
-            if (PMaster->hasAutomatonAttachment(*maybeId))
+            if (hasAttachment(*maybeId))
             {
                 repairKitTier += *maybeHPBoost;
             }
@@ -526,10 +534,10 @@ void LoadAutomatonStats(CCharEntity* PMaster, CPetEntity* PPet, Pet_t* petStats,
     }
 
     // Handle Mana Tanks, MP boost provided is shown in the automaton equipment menu, which means it needs to be calculated here.
-    const bool hasManaTank    = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::ManaTank));
-    const bool hasManaTankII  = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::ManaTankII));
-    const bool hasManaTankIII = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::ManaTankIII));
-    const bool hasManaTankIV  = PMaster->hasAutomatonAttachment(static_cast<uint8>(AutomatonAttachment::ManaTankIV));
+    const bool hasManaTank    = hasAttachment(static_cast<uint8>(AutomatonAttachment::ManaTank));
+    const bool hasManaTankII  = hasAttachment(static_cast<uint8>(AutomatonAttachment::ManaTankII));
+    const bool hasManaTankIII = hasAttachment(static_cast<uint8>(AutomatonAttachment::ManaTankIII));
+    const bool hasManaTankIV  = hasAttachment(static_cast<uint8>(AutomatonAttachment::ManaTankIV));
 
     // Only calculate if the automaton has a mana pool to boost, even if the attachment is equipped.
     if ((hasManaTank || hasManaTankII || hasManaTankIII || hasManaTankIV) && tempHealth.maxmp > 0)
@@ -578,7 +586,7 @@ void LoadAutomatonStats(CCharEntity* PMaster, CPetEntity* PPet, Pet_t* petStats,
                 return;
             }
 
-            if (PMaster->hasAutomatonAttachment(*maybeId))
+            if (hasAttachment(*maybeId))
             {
                 manaTankTier += *maybeMPBoost;
             }
@@ -622,10 +630,10 @@ void LoadAutomatonStats(CCharEntity* PMaster, CPetEntity* PPet, Pet_t* petStats,
         PPet->stats         = tempStats;
         PPet->health        = tempHealth;
 
-        PAutomaton->setEquip(PMaster->automatonInfo_.equip);
+        PAutomaton->setEquip(info.equip);
 
-        PPet->look      = PMaster->automatonInfo_.automatonLook;
-        PPet->name      = PMaster->automatonInfo_.automatonName;
+        PPet->look      = info.automatonLook;
+        PPet->name      = info.automatonName;
         PPet->look.size = MODEL_AUTOMATON;
 
         static_cast<CItemWeapon*>(PPet->m_Weapons[SLOT_MAIN])->setSkillType(xi::SkillType::AutomatonMelee);
@@ -1137,7 +1145,7 @@ void CalculateAutomatonStats(CBattleEntity* PMaster, CBattleEntity* PPet)
             }
         }
 
-        LoadAutomatonStats(PChar, PAutomaton, g_PPetList.at(petID), mainLevel);
+        LoadAutomatonStats(PChar, PChar->automatonInfo_, PAutomaton, g_PPetList.at(petID), mainLevel);
 
         if (PAutomaton)
         {
@@ -1157,6 +1165,20 @@ void CalculateAutomatonStats(CBattleEntity* PMaster, CBattleEntity* PPet)
             FinalizePetStatistics(PMaster, PAutomaton);
         }
     }
+    else if (IsSquadMate(PMaster) && PAutomaton != nullptr)
+    {
+        // XI: Forever Offline: a squad Puppetmaster mate: her level, her own record (CTrustEntity::squadAutomaton), no merits, no job points
+        const uint8 mainLevel = PMaster->GetMJob() == xi::Job::PUP ? PMaster->GetMLevel() : PMaster->GetSLevel();
+
+        PPet->SetMLevel(mainLevel);
+        PPet->SetSLevel(mainLevel / 2);
+
+        LoadAutomatonStats(PMaster, static_cast<CTrustEntity*>(PMaster)->squadAutomaton(), PAutomaton, g_PPetList.at(PAutomaton->petID()), mainLevel);
+
+        luautils::callGlobal<void>("xi.pets.automaton.onPetStatCalculate", PMaster, PAutomaton);
+
+        FinalizePetStatistics(PMaster, PAutomaton);
+    }
 }
 
 void CalculateLuopanStats(CBattleEntity* PMaster, CPetEntity* PPet)
@@ -1166,8 +1188,12 @@ void CalculateLuopanStats(CBattleEntity* PMaster, CPetEntity* PPet)
 
     if (PMaster->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Bolster))
     {
-        uint8 bolsterJPVal = static_cast<CCharEntity*>(PMaster)->PJobPoints->GetJobPointValue(JP_BOLSTER_EFFECT);
-        PPet->health.maxhp += (uint32)floor(PPet->health.maxhp * (0.03 * bolsterJPVal));
+        // (a squad mate has no job points)
+        if (const auto* PCharMaster = dynamic_cast<const CCharEntity*>(PMaster))
+        {
+            uint8 bolsterJPVal = PCharMaster->PJobPoints->GetJobPointValue(JP_BOLSTER_EFFECT);
+            PPet->health.maxhp += (uint32)floor(PPet->health.maxhp * (0.03 * bolsterJPVal));
+        }
     }
 
     PPet->health.hp = PPet->health.maxhp;
@@ -1819,6 +1845,13 @@ void LoadPet(CBattleEntity* PMaster, uint32 PetID, bool spawningFromZone)
             PetID = equippedPetID;
         }
     }
+    // XI: Forever Offline: a squad Puppetmaster mate raises the frame of her own record (never her master's)
+    else if (IsSquadMate(PMaster) && (PetID == PETID_HARLEQUINFRAME || PetID == PETID_VALOREDGEFRAME || PetID == PETID_SHARPSHOTFRAME || PetID == PETID_STORMWAKERFRAME))
+    {
+        auto* PMate = static_cast<CTrustEntity*>(PMaster);
+        puppetutils::LoadSquadAutomaton(PMate);
+        PetID = static_cast<uint32>(PETID_HARLEQUINFRAME) + static_cast<uint32>(PMate->squadAutomaton().equip.frame) - static_cast<uint32>(xi::AutomatonFrame::Harlequin);
+    }
 
     auto maybePetData = std::ranges::find(g_PPetList, PetID, &Pet_t::PetID);
 
@@ -1929,7 +1962,7 @@ void LoadPet(CBattleEntity* PMaster, uint32 PetID, bool spawningFromZone)
     }
 
     CPetEntity* PPet = nullptr;
-    if (petType == PET_TYPE::AUTOMATON && dynamic_cast<const CCharEntity*>(PMaster) != nullptr)
+    if (petType == PET_TYPE::AUTOMATON && (dynamic_cast<const CCharEntity*>(PMaster) != nullptr || IsSquadMate(PMaster)))
     {
         PPet = new CAutomatonEntity(PPetData->PetID);
     }
@@ -1946,7 +1979,11 @@ void LoadPet(CBattleEntity* PMaster, uint32 PetID, bool spawningFromZone)
         // spawn the luopan at the targets position with offsets from the action packet
         // this is calculated in the action packet to avoid incorrect placement after casting
         // m_ActionOffsetPos is a combination of targets pos + action offset pos
-        PPet->loc.p = static_cast<CCharEntity*>(PMaster)->m_ActionOffsetPos;
+        // a squad mate (a trust) has no action packet: the luopan starts at her feet and the spell script puts it on the target
+        if (const auto* PCharMaster = dynamic_cast<const CCharEntity*>(PMaster))
+        {
+            PPet->loc.p = PCharMaster->m_ActionOffsetPos;
+        }
     }
     else if (PetID == PETID_ALEXANDER || PetID == PETID_ODIN || PetID == PETID_ATOMOS)
     {
@@ -2049,7 +2086,16 @@ void LoadPet(CBattleEntity* PMaster, uint32 PetID, bool spawningFromZone)
 
         PPet->PAI->SetController(std::make_unique<CAutomatonController>(static_cast<CAutomatonEntity*>(PPet)));
     }
-    else if (PPet->getPetType() == PET_TYPE::LUOPAN && dynamic_cast<const CCharEntity*>(PMaster) != nullptr)
+    else if (PPet->getPetType() == PET_TYPE::AUTOMATON && IsSquadMate(PMaster))
+    {
+        // XI: Forever Offline: the squad mate's automaton: built from her own record (LoadPet above), then the same attachments and controller as a player's
+        CalculateAutomatonStats(PMaster, PPet);
+
+        puppetutils::EquipAttachments(static_cast<CAutomatonEntity*>(PPet));
+
+        PPet->PAI->SetController(std::make_unique<CAutomatonController>(static_cast<CAutomatonEntity*>(PPet)));
+    }
+    else if (PPet->getPetType() == PET_TYPE::LUOPAN && (dynamic_cast<const CCharEntity*>(PMaster) != nullptr || PMaster->objtype == TYPE_TRUST))
     {
         CalculateLuopanStats(PMaster, PPet);
     }

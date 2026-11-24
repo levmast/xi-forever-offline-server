@@ -29,6 +29,8 @@ end
 spellObject.onSpellCast = function(caster, target, spell)
     if target:isPC() then
         target:sendRaise(3)
+    elseif target:getLocalVar('SQUAD_ID') > 0 and xi.squad and xi.squad.onRaised then
+        xi.squad.onRaised(caster, target, 3) -- (XI: Forever Offline) a fallen squad mate gets up (modules/custom/lua/squad.lua)
     end
 
     spell:setMsg(xi.msg.basic.MAGIC_CASTS_ON)

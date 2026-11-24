@@ -21,14 +21,137 @@ M.unlockVar = function(itemId)
     return 'SQUAD_FOODU_' .. tostring(itemId)
 end
 
-M.byId = function(food, itemId)
+-----------------------------------
+-- (2026-11-23, FalconX51; the user: yes) any food can join the menu: trade one to a mate and it is unlocked for the whole
+-- squad (the traded one is the price), listed under "Foods you gave". It is eaten as the real item (its own script's
+-- stats and length, scripts/items/<name>.lua). Kept on your character: SQUAD_FOODX_<n> = item id (n = 1..EXTRA_MAX),
+-- SQUAD_FOODD_<item id> = its length in seconds. A listed food traded the same way is unlocked without the gil.
+-----------------------------------
+M.EXTRA_MAX = 30
+
+local function pretty(name)
+    return (tostring(name or '?'):gsub('_', ' '):gsub('(%a)([%w\']*)', function(a, b)
+        return a:upper() .. b
+    end))
+end
+
+-- the item's own food script: its name and how long the food lasts, or nil when it is not a food
+M.foodScript = function(itemId)
+    local okItem, item = pcall(function()
+        return GetReadOnlyItem and GetReadOnlyItem(itemId)
+    end)
+    local name = okItem and item and item:getName() or nil
+    if not name or name == '' then
+        return nil
+    end
+
+    local f = io.open('scripts/items/' .. string.lower(name) .. '.lua', 'r')
+    if not f then
+        return nil
+    end
+
+    local text = f:read('*a')
+    f:close()
+    if not text:find('xi.effect.FOOD', 1, true) then
+        return nil
+    end
+
+    local duration = tonumber(text:match('xi%.effect%.FOOD%s*,%s*{[^}]-duration%s*=%s*(%d+)'))
+    if not duration or duration <= 0 then
+        return nil
+    end
+
+    return pretty(name), duration
+end
+
+M.extraMeal = function(player, itemId)
+    if player == nil or itemId == nil or itemId == 0 then
+        return nil
+    end
+
+    local duration = player:getCharVar('SQUAD_FOODD_' .. tostring(itemId))
+    if duration <= 0 then
+        return nil
+    end
+
+    local name = M.foodScript(itemId) or ('Item ' .. tostring(itemId))
+    return { name = name, id = itemId, duration = duration, kind = 'given', price = 0, mods = {} }
+end
+
+M.extras = function(player)
+    local list = {}
+    for i = 1, M.EXTRA_MAX do
+        local meal = M.extraMeal(player, player:getCharVar('SQUAD_FOODX_' .. i))
+        if meal then
+            list[#list + 1] = meal
+        end
+    end
+
+    table.sort(list, function(a, b) return a.name < b.name end)
+    return list
+end
+
+M.byId = function(food, itemId, player)
     for key, meal in pairs(food.foods or {}) do
         if meal.id == itemId then
             return meal, key
         end
     end
 
-    return nil
+    return M.extraMeal(player, itemId)
+end
+
+-- A food traded to a mate (squad.lua xi.squad.onTrade). True when the item was a food (taken, or told why not).
+M.giveFood = function(player, owner, offer, food, say)
+    local listed = nil
+    for _, meal in pairs(food.foods or {}) do
+        if meal.id == offer.itemId then
+            listed = meal
+        end
+    end
+
+    local name, duration = M.foodScript(offer.itemId)
+    if listed == nil and name == nil then
+        return false
+    end
+
+    local unlockedVar = M.unlockVar(offer.itemId)
+    if owner:getCharVar(unlockedVar) == 1 or (listed == nil and owner:getCharVar('SQUAD_FOODD_' .. offer.itemId) > 0) then
+        say('alreadyhave', { item = listed and listed.name or name })
+        return true
+    end
+
+    local free = nil
+    if listed == nil then
+        for i = 1, M.EXTRA_MAX do
+            if owner:getCharVar('SQUAD_FOODX_' .. i) == 0 then
+                free = i
+                break
+            end
+        end
+
+        if free == nil then
+            player:printToPlayer(string.format('Your squad already knows %d foods of its own: that is all it can keep.', M.EXTRA_MAX), xi.msg.channel.SYSTEM_3)
+            return true
+        end
+    end
+
+    if not player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) then
+        say('failed')
+        return true
+    end
+
+    if listed then
+        owner:setCharVar(unlockedVar, 1)
+    else
+        owner:setCharVar('SQUAD_FOODX_' .. free, offer.itemId)
+        owner:setCharVar('SQUAD_FOODD_' .. offer.itemId, duration)
+    end
+
+    say('thanks', { item = listed and listed.name or name })
+    player:printToPlayer(string.format('%s is unlocked for your squad: choose it with !squad food <slot>%s.', listed and listed.name or name,
+        listed and '' or ' (under "Foods you gave")'), xi.msg.channel.SYSTEM_3)
+    return true
 end
 
 -- what unlocking a food costs: its average auction house price, moved by the launcher's price rule
@@ -42,7 +165,7 @@ M.price = function(meal)
 end
 
 M.unlocked = function(player, meal)
-    return player:getCharVar(M.unlockVar(meal.id)) == 1
+    return meal.kind == 'given' or player:getCharVar(M.unlockVar(meal.id)) == 1
 end
 
 -- the foods of one kind, cheapest first
@@ -72,7 +195,7 @@ M.chosen = function(mob, food)
         return nil
     end
 
-    return (M.byId(food, id))
+    return (M.byId(food, id, mob:getMaster()))
 end
 
 M.onSpawn = function(player, trust, mate)
@@ -184,7 +307,7 @@ end
 
 local function kindMenu(player, mate, kind, deps, back)
     local entries = {}
-    for _, meal in ipairs(M.ofKind(deps.food, kind)) do
+    for _, meal in ipairs(kind == 'given' and M.extras(player) or M.ofKind(deps.food, kind)) do
         local mine = M.unlocked(player, meal)
         entries[#entries + 1] =
         {
@@ -203,13 +326,13 @@ local function kindMenu(player, mate, kind, deps, back)
         }
     end
 
-    paged(player, (deps.food.kindNames and deps.food.kindNames[kind]) or kind, entries, 1, back)
+    paged(player, kind == 'given' and 'Foods you gave' or (deps.food.kindNames and deps.food.kindNames[kind]) or kind, entries, 1, back)
 end
 
 -- The first menu: the mate's own pick, then the kinds of food (the kind its job usually eats first).
 M.open = function(player, mate, deps)
     local food = deps.food
-    local now = M.byId(food, player:getCharVar(M.pickVar(mate.id)))
+    local now = M.byId(food, player:getCharVar(M.pickVar(mate.id)), player)
     local own = food.roleByJob and food.roleByJob[mate.mjob]
     local kinds = {}
     if own then
@@ -236,10 +359,14 @@ M.open = function(player, mate, deps)
             end,
         },
     }
+    if #M.extras(player) > 0 then
+        kinds[#kinds + 1] = 'given'
+    end
+
     for _, kind in ipairs(kinds) do
         entries[#entries + 1] =
         {
-            label = (food.kindNames and food.kindNames[kind]) or kind,
+            label = kind == 'given' and 'Foods you gave' or (food.kindNames and food.kindNames[kind]) or kind,
             run = function(playerArg)
                 later(playerArg, function(entity)
                     kindMenu(entity, mate, kind, deps, top)

@@ -32,6 +32,8 @@ struct MapSession;
 class PacketSystem
 {
 public:
+    PacketSystem();
+
     void dispatch(uint16 packetId, MapSession* PSession, CCharEntity* PChar, CBasicPacket& data);
 
 private:

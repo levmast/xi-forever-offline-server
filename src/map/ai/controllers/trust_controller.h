@@ -25,6 +25,7 @@
 #include <memory>
 
 #include "mob_controller.h"
+#include "trust_hold.h"
 
 class CCharEntity;
 class CTrustEntity;
@@ -63,6 +64,10 @@ public:
     auto GetTopEnmity() const -> CBattleEntity*;
     auto GetPartyPosition() const -> uint8;
 
+    // XI: Forever Offline: a script can hold the stock engage / weapon skill decisions (trust_hold.h). true while the hold for
+    // this bit (trust_hold::HoldEngage, HoldWeaponSkill) is on and its script keeps renewing it.
+    auto ScriptHolds(uint32 bit) -> bool;
+
     std::unique_ptr<gambits::CGambitsContainer> m_GambitsContainer;
 
 protected:
@@ -92,6 +97,7 @@ private:
     timer::time_point m_CampPullTry; // FFXI Offline squad camp: the puller's last pull spell or ranged shot
     uint32            m_EngageWaitTarget = 0; // FFXI Offline squad: the monster this mate is waiting to engage (engage delay)
     timer::time_point m_EngageWaitSince;      // ...and since when
+    trust_hold::State m_ScriptHold;           // XI: Forever Offline: the script hold, one state for both bits (trust_hold.h)
 
     // FFXI Offline squad (2026-11-22): an area spell cast on oneself (Protectra, Shellra, the Bar spells) is held back
     // until its caster has stepped within reach of the player; see Cast and StepInTick

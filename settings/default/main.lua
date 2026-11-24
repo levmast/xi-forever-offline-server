@@ -344,6 +344,11 @@ xi.settings.main =
     CASKET_SHOW_CODE             = 0,     -- 1 = on, 0 = off (the era). A locked treasure casket tells you its combination when you examine it.
     GUILD_SHOPS_ALWAYS_STOCKED   = 0,     -- 1 = on, 0 = off (the era). Guild shops never run out of the items they sell.
     GUILD_SHOPS_ALWAYS_OPEN      = 1,     -- 1 = on, 0 = off (the era). Guild shops have no closing hours and no weekly holiday.
+    EPHEMERAL_MOOGLES            = 1,     -- 1 = on (default), 0 = off. The crafting guilds' Ephemeral Moogles (Seekers of Adoulin) keep your crystals. src/map/utils/zoneutils.cpp
+    ANCESTRY_MOOGLES             = 0,     -- 1 = on, 0 = off (default). The Ancestry Moogles in Port San d'Oria, Port Bastok and Windurst Walls (Seekers of Adoulin) change your race, face, hair and size, free and as often as you like. src/map/utils/zoneutils.cpp, modules/custom/late/comforts.lua
+    TREASURE_WAIT_MULTIPLIER     = 1.000, -- Multiplies the wait after a treasure chest or coffer is opened before one in that area gives loot again (the 15-60 minute "illusion"; 1 = the era, 0 = none). modules/custom/late/comforts.lua
+    SQUAD_UNLIMITED_JUICE        = 0,     -- 1 = on, 0 = off (default). A squad mate with none of the juices you gave it drinks one for its level, free. modules/custom/lua/squad_juice.lua
+    SQUAD_MATES_RAISABLE         = 1,     -- 1 = on (default), 0 = off. A fallen squad mate stays where it fell for 5 minutes and can be Raised. src/map/entities/trust_entity.cpp, modules/custom/lua/squad.lua
     EXP_CHAIN_TIME_MULTIPLIER    = 1.000, -- Multiplies the time you have to keep an experience chain going (1 = the era). scripts/globals/experience_points.lua
     PLAYER_DAMAGE_TAKEN_MULTIPLIER = 1.000, -- Multiplies the damage players and squad mates take (0.5 = half, 2 = double; 1 = the era). modules/custom/late/comforts.lua
     SEAL_DROP_MINUTES            = 5,     -- Minutes a party waits after a Beastmen's or Kindred's Seal (or another special drop) before the next can drop. 5 = the base's rule, 0 = no wait. src/map/entities/mob_entity.cpp

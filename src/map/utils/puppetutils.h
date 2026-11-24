@@ -25,6 +25,7 @@
 #include "status_effect.h"
 
 class CAutomatonEntity;
+class CTrustEntity;
 
 namespace puppetutils
 {
@@ -38,6 +39,7 @@ void setAttachment(CCharEntity* PChar, uint8 slotId, uint8 attachment);
 void setFrame(CCharEntity* PChar, xi::AutomatonFrame frame);
 void setHead(CCharEntity* PChar, xi::AutomatonHead head);
 auto getSkillCap(const CCharEntity* PChar, xi::SkillType skill, uint8 level) -> uint16;
+auto getSkillCap(xi::AutomatonFrame frame, xi::AutomatonHead head, xi::SkillType skill, uint8 level) -> uint16; // XI: Forever Offline: a squad mate has no CCharEntity
 void TrySkillUP(CAutomatonEntity* PAutomaton, xi::SkillType SkillID, uint8 lvl);
 void CheckAttachmentsForManeuver(const CCharEntity* PChar, xi::StatusEffect maneuver, bool gain);
 void EquipAttachments(CAutomatonEntity* PAutomaton);
@@ -45,5 +47,9 @@ void UpdateAttachments(const CCharEntity* PChar);
 void PreLevelRestriction(const CCharEntity* PChar);
 void PostLevelRestriction(const CCharEntity* PChar);
 auto CalculateAutomatonSkills(CCharEntity* PMaster, uint8 mlvl) -> skills_t&;
+
+// XI: Forever Offline: a squad Puppetmaster mate's own automaton (the record comes from the Lua hook SquadMateAutomaton, checked against the attachment rules)
+void LoadSquadAutomaton(CTrustEntity* PMate);
+auto CalculateSquadAutomatonSkills(AutomatonInfo& info, uint8 mlvl) -> skills_t&;
 
 }; // namespace puppetutils

@@ -45,7 +45,10 @@ class AHPaginationModule : public CPPModule
             return false;
         }
 
-        if (PChar->m_GMlevel == 0 && !PChar->loc.zone->CanUseMisc(xi::ZoneMisc::AuctionHouse))
+        // (XI: Forever Offline, 2026-11-23, Emeric, Velderen, sparkiie) map.AH_ANYWHERE lets the auction house answer in
+        // every area (0x04e_auc.cpp); this check ran first and dropped the packet, so bids out in the field still hung.
+        if (PChar->m_GMlevel == 0 && settings::get<uint8>("map.AH_ANYWHERE") == 0 &&
+            !PChar->loc.zone->CanUseMisc(xi::ZoneMisc::AuctionHouse))
         {
             ShowWarning("[AH PAGES] %s is trying to use the auction house in a disallowed zone [%s]", PChar->getName(), PChar->loc.zone->getName());
             return true;

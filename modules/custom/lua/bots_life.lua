@@ -14,7 +14,7 @@ local L = {}
 local CONFIG_PATH = 'modules/custom/lua/bots_config'
 local DATA_PATH   = 'modules/custom/lua/crowds_data'
 
-local MAX_ROSTER, MAX_ONLINE = 600, 550
+local MAX_ROSTER, MAX_ONLINE = 2000, 1500 -- (2026-11-23, Meli) the launcher warns past 600 / 550
 local CREATE_EVERY  = 1     -- seconds between two new characters while the roster fills
 local FILL_EVERY    = { 1, 3 }      -- seconds between log ins while the online count is far below the target
 local REFILL_EVERY  = { 20, 90 }    -- ... and once it is close (a replacement for someone who logged out)

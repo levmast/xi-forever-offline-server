@@ -26,6 +26,7 @@
 #include "data/enums/automaton_head.h"
 #include "entities/automaton_entity.h"
 #include "enums/automaton.h"
+#include "entities/trust_entity.h"
 #include "enums/msg_basic.h"
 #include "items/item_puppet.h"
 #include "itemutils.h"
@@ -478,13 +479,19 @@ auto getSkillCap(const CCharEntity* PChar, const xi::SkillType skill, const uint
         return 0;
     }
 
+    return getSkillCap(PChar->getAutomatonFrame(), PChar->getAutomatonHead(), skill, level);
+}
+
+// XI: Forever Offline: the same cap from a frame and a head, for a squad mate's automaton (she has no CCharEntity)
+auto getSkillCap(const xi::AutomatonFrame automatonFrame, const xi::AutomatonHead automatonHead, const xi::SkillType skill, const uint8 level) -> uint16
+{
     if (skill < xi::SkillType::AutomatonMelee || skill > xi::SkillType::AutomatonMagic)
     {
         return 0;
     }
 
-    const auto frame    = static_cast<uint8>(PChar->getAutomatonFrame());
-    const auto head     = static_cast<uint8>(PChar->getAutomatonHead());
+    const auto frame    = static_cast<uint8>(automatonFrame);
+    const auto head     = static_cast<uint8>(automatonHead);
     const auto skillKey = static_cast<uint8>(skill);
 
     const auto maybeSkillCaps = lua["xi"]["pets"]["automaton"]["skillCaps"].get<sol::optional<sol::table>>();
@@ -814,6 +821,137 @@ auto CalculateAutomatonSkills(CCharEntity* PMaster, uint8 mlvl) -> skills_t&
     tempSkills.automaton_melee  = tempSkills.automaton_melee + meritbonus + meleeBonus;
 
     return tempSkills;
+}
+
+// XI: Forever Offline: a squad Puppetmaster mate's skills: her automaton's frame and head cap at her level (a mate has no skill-ups and no merits)
+auto CalculateSquadAutomatonSkills(AutomatonInfo& info, const uint8 mlvl) -> skills_t&
+{
+    auto& tempSkills = info.automatonSkills;
+
+    tempSkills.automaton_melee  = getSkillCap(info.equip.frame, info.equip.head, xi::SkillType::AutomatonMelee, mlvl);
+    tempSkills.automaton_ranged = getSkillCap(info.equip.frame, info.equip.head, xi::SkillType::AutomatonRanged, mlvl);
+    tempSkills.automaton_magic  = getSkillCap(info.equip.frame, info.equip.head, xi::SkillType::AutomatonMagic, mlvl);
+
+    // copy magic skills into generic skills
+    tempSkills.healing    = tempSkills.automaton_magic;
+    tempSkills.enhancing  = tempSkills.automaton_magic;
+    tempSkills.enfeebling = tempSkills.automaton_magic;
+    tempSkills.elemental  = tempSkills.automaton_magic;
+    tempSkills.dark       = tempSkills.automaton_magic;
+
+    return tempSkills;
+}
+
+// XI: Forever Offline: builds the automaton record of a squad Puppetmaster mate. The record is asked from the Lua hook SquadMateAutomaton(mate), which
+// returns { frame = <xi.automaton.frame>, head = <xi.automaton.head>, attachments = { <attachment id>, ... }, name = <string> } (Squads Revamped keeps it
+// per mate on the server). Without the hook, or with an answer that is no table, the mate gets a Harlequin head and frame and no attachments. The
+// attachment rules are the player's (setAttachment): a real attachment, none twice, 12 slots, and the element capacity of the frame and head is never
+// exceeded; one that breaks a rule is left out. The player's own automaton data (CCharEntity::automatonInfo_) is never read or written.
+void LoadSquadAutomaton(CTrustEntity* PMate)
+{
+    auto& info = PMate->squadAutomaton();
+    info       = AutomatonInfo{};
+
+    auto                  frame = xi::AutomatonFrame::Harlequin;
+    auto                  head  = xi::AutomatonHead::Harlequin;
+    std::array<uint8, 12> wanted{};
+
+    const sol::object hook = lua["SquadMateAutomaton"];
+    if (hook.is<sol::protected_function>())
+    {
+        const sol::protected_function fn     = hook;
+        const auto                    result = fn(static_cast<CBattleEntity*>(PMate));
+        if (!result.valid())
+        {
+            const sol::error err = result;
+            ShowError("puppetutils::LoadSquadAutomaton: SquadMateAutomaton: %s", err.what());
+        }
+        else if (result.get_type() == sol::type::table)
+        {
+            const sol::table record = result;
+
+            const auto wantedFrame = static_cast<xi::AutomatonFrame>(record.get_or("frame", static_cast<int>(xi::AutomatonFrame::Harlequin)));
+            const auto wantedHead  = static_cast<xi::AutomatonHead>(record.get_or("head", static_cast<int>(xi::AutomatonHead::Harlequin)));
+            if (wantedFrame >= xi::AutomatonFrame::Harlequin && wantedFrame <= xi::AutomatonFrame::Stormwaker)
+            {
+                frame = wantedFrame;
+            }
+
+            if (wantedHead >= xi::AutomatonHead::Harlequin && wantedHead <= xi::AutomatonHead::Spiritreaver)
+            {
+                head = wantedHead;
+            }
+
+            if (const sol::optional<sol::table> list = record["attachments"])
+            {
+                for (size_t i = 0; i < wanted.size(); ++i)
+                {
+                    wanted[i] = static_cast<uint8>(list->get_or(static_cast<int>(i + 1), 0));
+                }
+            }
+
+            const auto name = record.get_or<std::string>("name", "");
+            if (!name.empty() && name.size() <= 15)
+            {
+                info.automatonName = name;
+            }
+        }
+    }
+
+    const auto* PFrame = xi::items::lookup<CItemPuppet>(0x2000 + static_cast<uint8>(frame));
+    const auto* PHead  = xi::items::lookup<CItemPuppet>(0x2000 + static_cast<uint8>(head));
+    if (PFrame == nullptr || PHead == nullptr || PFrame->getEquipSlot() != ITEM_PUPPET_FRAME || PHead->getEquipSlot() != ITEM_PUPPET_HEAD)
+    {
+        ShowError("puppetutils::LoadSquadAutomaton: no frame or head item for %s", PMate->getName());
+        return;
+    }
+
+    info.equip.frame            = frame;
+    info.equip.head             = head;
+    info.automatonLook.modelid  = calculateAutomatonModel(frame, head);
+    info.elementalCapacityBonus = 0;
+
+    for (int element = 0; element < 8; element++)
+    {
+        info.elementMax[element] = ((PFrame->getElementSlots() >> (element * 4)) & 0xF) + ((PHead->getElementSlots() >> (element * 4)) & 0xF);
+    }
+
+    size_t slot = 0;
+    for (const auto attachment : wanted)
+    {
+        if (attachment == 0 || slot >= info.equip.attachments.size() || std::ranges::contains(info.equip.attachments, attachment))
+        {
+            continue;
+        }
+
+        const auto* PAttachment = xi::items::lookup<CItemPuppet>(0x2100 + attachment);
+        if (PAttachment == nullptr || PAttachment->getEquipSlot() != ITEM_PUPPET_ATTACHMENT)
+        {
+            continue;
+        }
+
+        bool fits = true;
+        for (int element = 0; element < 8; element++)
+        {
+            if (info.elementEquip[element] + ((PAttachment->getElementSlots() >> (element * 4)) & 0xF) > info.elementMax[element])
+            {
+                fits = false;
+                break;
+            }
+        }
+
+        if (!fits)
+        {
+            continue;
+        }
+
+        for (int element = 0; element < 8; element++)
+        {
+            info.elementEquip[element] += (PAttachment->getElementSlots() >> (element * 4)) & 0xF;
+        }
+
+        info.equip.attachments[slot++] = attachment;
+    }
 }
 
 } // namespace puppetutils

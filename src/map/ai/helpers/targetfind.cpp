@@ -23,6 +23,7 @@
 
 #include "ai/ai_container.h"
 #include "common/mmo.h"
+#include "common/settings.h"
 #include "common/utils.h"
 #include "data/enums/claim_type.h"
 #include "data/enums/mob_mod.h"
@@ -32,6 +33,17 @@
 #include "entities/trust_entity.h"
 #include "status_effect_container.h"
 #include "utils/zoneutils.h"
+
+// XI Forever Offline: map.TRUST_AOE_RANGE = 'retail' (default) | 'extended'. Retail: trusts, squad mates and pets obey the area
+// radius and the player cast range like a player. Extended: the stock behavior of the server (they skip the radius test, and
+// trusts cast to 28.5 yalms). settings::get is cached per thread and follows a settings reload.
+namespace
+{
+auto trustAoeRetail() -> bool
+{
+    return settings::get<std::string>("map.TRUST_AOE_RANGE") != "extended";
+}
+} // namespace
 
 CTargetFind::CTargetFind(CBattleEntity* PBattleEntity)
 : isPlayer(false)
@@ -602,7 +614,17 @@ auto CTargetFind::validEntity(CBattleEntity* PTarget) -> bool
             else if (m_findType == FIND_TYPE::MONSTER_MONSTER || m_findType == FIND_TYPE::PLAYER_PLAYER)
             {
                 // Allow Trusts and summoner/jug pets in party-targeted AoEs
-                return PTarget->objtype == TYPE_TRUST || PTarget->objtype == TYPE_PET;
+                if (PTarget->objtype != TYPE_TRUST && PTarget->objtype != TYPE_PET)
+                {
+                    return false;
+                }
+
+                // XI Forever Offline: Retail range (default) lets them fall through to the placement test below, inside the area
+                // like a player. Extended keeps the stock early "return true" (no radius test).
+                if (!trustAoeRetail())
+                {
+                    return true;
+                }
             }
         }
     }

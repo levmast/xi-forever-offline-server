@@ -456,9 +456,29 @@ end
 local function healTurn(bot, h)
     -- a bot that is casting (or has just started a cure) is busy: returning false here let the rest step sit it down,
     -- which interrupted the cure, so a hurt healer stood up, cast, sat, cast... forever (wildthing, 2026-11-16)
-    if now() < (h.healBusy or 0) or (xi.bots.isCasting and xi.bots.isCasting(bot)) then
+    local casting = xi.bots.isCasting and xi.bots.isCasting(bot)
+    if casting then
+        h.castSeen = true
+    end
+
+    if now() < (h.healBusy or 0) or casting then
         return true
     end
+
+    -- (2026-11-23, K-Andy, Hasuko: a world party's healer in West Sarutabaruta stood up, sat down, stood up... forever)
+    -- a cure that never started (refused: still sitting when it was sent, out of sight...) used to be tried again
+    -- every 4 seconds, with the rest step sitting the bot down in between. Two in a row that never showed up as a
+    -- cast: no cures for 30 seconds, so the party rests and the bot gets its MP and footing back.
+    if h.castSent and not h.castSeen then
+        h.castMissed = (h.castMissed or 0) + 1
+        if h.castMissed >= 2 then
+            h.castMissed = 0
+            h.castWait = now() + 30
+        end
+    elseif h.castSent then
+        h.castMissed = 0
+    end
+    h.castSent, h.castSeen = nil, nil
 
     local job = jobOf(bot)
     if not HEALERS[job] or now() < (h.castWait or 0) then
@@ -493,10 +513,18 @@ local function healTurn(bot, h)
     end
 
     if spell then
-        BotHeal(bot:getID(), false) -- (stands up first: the server refuses a spell from someone who is resting)
+        if sitting then
+            -- stand up now and cast on the next turn: a spell sent in the same moment as standing up was refused, as
+            -- the bot was still resting when it arrived
+            BotHeal(bot:getID(), false)
+            h.healBusy = now() + 2
+            return true
+        end
+
         BotCast(bot:getID(), spell, worst)
         h.castWait = now() + 4
         h.healBusy = now() + 2   -- until the cast shows up as the bot's current action
+        h.castSent = true
         return true
     end
 

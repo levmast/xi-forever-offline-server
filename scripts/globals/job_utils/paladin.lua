@@ -12,7 +12,9 @@ xi.job_utils.paladin.checkCover = function(player, target, ability)
     if
         target == nil or
         target:getID() == player:getID() or
-        not target:isPC()
+        -- (XI: Forever Offline, 2026-11-23, sparkiie) a squad mate in your party can be Covered too (battleutils finds
+        -- its party through its master)
+        (not target:isPC() and target:getLocalVar('SQUAD_ID') == 0)
     then
         return xi.msg.basic.CANNOT_PERFORM_TARG, 0
     else

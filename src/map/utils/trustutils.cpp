@@ -374,7 +374,11 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
 
     auto* trustData = itr->second.get();
 
-    auto* PTrust = new CTrustEntity(PMaster, trustData->trustID, IsPassiveTrust{ trustData->isPassiveTrust });
+    // XI: Forever Offline: a squad mate that borrows the body of a passive template (Brygid, the GEO template; Cornelia, the body Squads gives
+    // Summoner, Blue Mage, Corsair and Puppetmaster) is a real party member: targetable, able to cast. A passive trust is untargetable and
+    // spell::CanUseSpell refuses every spell for an untargetable caster, so a squad GEO or BLU could never complete a cast.
+    const bool passiveTemplate = trustData->isPassiveTrust && spec == nullptr;
+    auto*      PTrust          = new CTrustEntity(PMaster, trustData->trustID, IsPassiveTrust{ passiveTemplate });
 
     PTrust->loc       = PMaster->loc;
     PTrust->m_OwnerID = EntityId(PMaster);
@@ -660,7 +664,8 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
             }
 
             const auto group = PSpell->getSpellGroup();
-            if (group == SPELLGROUP_TRUST || group == SPELLGROUP_SUMMONING || group == SPELLGROUP_GEOMANCY)
+            // (geomancy is in: Indi and Geo spells are learned from the job's own levels, only a GEO has them)
+            if (group == SPELLGROUP_TRUST || group == SPELLGROUP_SUMMONING)
             {
                 continue;
             }
@@ -720,8 +725,11 @@ auto LoadTrust(CCharEntity* PMaster, uint32 TrustID, const trustutils::SquadSpec
                     }
                 }
 
+                // (geomancy cannot be learned from a scroll in the squad window: a GEO keeps her Indi and Geo spells)
+                const auto* PKept   = spell::GetSpell(entry.spellId);
+                const bool  geomancy = PKept != nullptr && PKept->getSpellGroup() == SPELLGROUP_GEOMANCY;
                 const bool learned = std::ranges::find(spec->learnedSpells, static_cast<uint16>(entry.spellId)) != spec->learnedSpells.end();
-                if (at < 18 || at == 255 || learned)
+                if (at < 18 || at == 255 || learned || geomancy)
                 {
                     kept->AddSpell(entry.spellId, entry.min_level, entry.max_level);
                 }

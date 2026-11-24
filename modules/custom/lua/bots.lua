@@ -10,7 +10,7 @@
 -- In game (any of your characters):
 --   !bots                         roster status (how many, how many online, in this area)
 --   !bots list                    every bot and who is online
---   !bots online <0-550>           how many are on at a time, right now (the launcher value is used again at the next PLAY)
+--   !bots online <0-1500>           how many are on at a time, right now (the launcher value is used again at the next PLAY)
 --   !bots on / off                the roster logs in / everyone logs out (until the next PLAY)
 --   !bots hunt <Name>             send a bot out hunting now (to watch it: !bots where <Name>)
 --   !bots where <Name>            which area a bot is in, its level, what it is doing, its personality and gil
@@ -1924,11 +1924,11 @@ cmd.onTrigger = function(player, action, a1, a2, a3)
     elseif action == 'online' and life then
         local n = tonumber(a1)
         if not n then
-            tell(player, 'Usage: !bots online <0-550>')
+            tell(player, 'Usage: !bots online <0-1500>')
             return
         end
 
-        life.config().online = math.max(0, math.min(550, math.floor(n)))
+        life.config().online = math.max(0, math.min(1500, math.floor(n)))
         tell(player, 'Bots online at a time: ' .. life.config().online .. ' (they log in or out over the next minutes)')
     elseif (action == 'on' or action == 'off') and life then
         life.config().enabled = action == 'on'
@@ -2208,7 +2208,7 @@ xi.bots.setOnline = function(n)
         return false
     end
 
-    life.config().online = math.max(0, math.min(550, math.floor(n)))
+    life.config().online = math.max(0, math.min(1500, math.floor(n)))
     return true
 end
 
@@ -2253,7 +2253,13 @@ end
 
 local function spellRequest(player, text)
     local words = {}
-    for w in string.gmatch(string.lower(text or ''), "[%a']+") do
+    -- (v0.3.3, G10) apostrophes disappear, the way the squad mates read a line ("Mage's Ballad" is MAGES_BALLAD; before it was the key MAGE'S_BALLAD)
+    local lowered, wordPattern = string.lower(text or ''), "[%a']+"
+    if xi.squad ~= nil and xi.squad.requestsOn ~= nil and xi.squad.requestsOn(player) then
+        lowered, wordPattern = lowered:gsub("'", ''), '%a+'
+    end
+
+    for w in string.gmatch(lowered, wordPattern) do
         if not REQUEST_FILLER[w] then
             words[#words + 1] = w
         end
@@ -2308,7 +2314,49 @@ local function spellRequest(player, text)
         target = people[rest]
     end
 
+    -- (v0.3.3, G1/G16) a squad mate took this request (or the same one is on its way): one answerer, one cast
+    local squad = xi.squad
+    if squad ~= nil and squad.requestTaken ~= nil and squad.requestTaken(player, spellId, target) then
+        return true
+    end
+
     local spellName = table.concat(words, ' ', first, last)
+
+    -- (v0.3.3, G9) a Raise goes on someone who is knocked out. "raise" with nobody named means the first fallen member of your party; a standing
+    -- target is no Raise. Before the bot said "sure, raise coming" and cast it at you standing there.
+    local kind = type(SquadSpellKind) == 'function' and SquadSpellKind(spellId) or ''
+    if kind == 'dead' and squad ~= nil and squad.requestsOn ~= nil and squad.requestsOn(player) then
+        if target == player and player:isAlive() then
+            for _, member in pairs(player:getParty() or {}) do
+                if target == player and member:getObjType() == xi.objType.PC and member:isDead() and member:getZoneID() == player:getZoneID() then
+                    target = member
+                end
+            end
+        end
+
+        if target:isAlive() then
+            if asked then
+                asked:timer(math.random(800, 1600), function(b)
+                    chat(b, 4, target:getID() == player:getID() and 'you are standing, nobody needs a raise' or (target:getName() .. ' is standing'))
+                end)
+            end
+
+            return true
+        end
+    end
+
+    -- (v0.3.3, G6) a spell that only works on its caster (Warp, Escape, Reraise, Utsusemi) cannot be put on you: no "sure, warp coming" and a cast the
+    -- server refuses. A bot you named says so; a general request stays quiet like any request nobody can do.
+    if kind == 'self' and squad ~= nil and squad.requestsOn ~= nil and squad.requestsOn(player) then
+        if asked then
+            asked:timer(math.random(800, 1600), function(b)
+                chat(b, 4, spellName .. ' only works on myself')
+            end)
+        end
+
+        return true
+    end
+
     local caster, why = nil, nil
     for _, bot in ipairs(asked and { asked } or bots) do
         local ok, reason = requestCanCast(bot, spellId)
@@ -2333,6 +2381,29 @@ local function spellRequest(player, text)
         return true
     end
 
+    -- (v0.3.3, G11; extras: !sqreq more on) one price for a Teleport: a bot white mage that you shout for asks for gil, and the same Teleport asked in
+    -- party chat was free. Asked in party chat it now costs what the shout would have, paid when it casts.
+    if squad ~= nil and squad.requestsMore ~= nil and squad.requestsMore(player) and teleOk and tele ~= nil and tele.priceForSpell ~= nil then
+        local fee, crag = tele.priceForSpell(spellId)
+        if fee ~= nil then
+            if player:getGil() < fee then
+                caster:timer(math.random(800, 1600), function(b)
+                    chat(b, 4, 'Teleport-' .. crag .. ' is ' .. fee .. ' gil from me, you need that first')
+                end)
+
+                return true
+            end
+
+            player:delGil(fee)
+            caster:addGil(fee)
+            spellName = spellName .. ' (' .. fee .. ' gil)'
+        end
+    end
+
+    if squad ~= nil and squad.requestClaim ~= nil then
+        squad.requestClaim(player, spellId, target)
+    end
+
     local st = state[caster:getID()] or {}
     state[caster:getID()] = st
     st.partyWait = os.time() + 6 -- (its own party play waits for this cast)
@@ -2346,6 +2417,11 @@ local function spellRequest(player, text)
 end
 
 xi.bots.partyOrder = function(player, text)
+    -- (v0.3.3, G1) a line a squad mate already took is not answered a second time, by a spell request or by chatter
+    if xi.squad ~= nil and xi.squad.lineTaken ~= nil and xi.squad.lineTaken(player, text) then
+        return
+    end
+
     if spellRequest(player, text) then
         return
     end
@@ -2367,6 +2443,9 @@ xi.bots.partyOrder = function(player, text)
         return
     end
 
+    -- (v0.3.3, G18) every bot obeys, one of them answers: five "k, following" for one "follow" was five lines for one order
+    local answered = false
+    local oneVoice = xi.squad ~= nil and xi.squad.requestsOn ~= nil and xi.squad.requestsOn(player)
     for _, member in pairs(player:getParty() or {}) do
         local id = member:getID()
         if member:getObjType() == xi.objType.PC and BotIsBot(id) then
@@ -2397,12 +2476,39 @@ xi.bots.partyOrder = function(player, text)
             member:timer(math.random(500, 1500), function(b)
                 local line = ({ follow = 'k, following', stay = 'k, staying here', stop = 'stopping', attack = 'on it',
                                 release = b:isDead() and 'ok, see you back in town' or nil })[word]
-                if line then
+                if line and not (oneVoice and answered) then
+                    answered = true
                     chat(b, 4, line)
                 end
             end)
         end
     end
+end
+
+-- (2026-11-23, Yenkei) !squad attack / !squad stop (squad.lua) order the bot players in your party too, as "attack" /
+-- "stop" in party chat do. Returns how many bots took the order.
+xi.bots.partyOrder = function(player, word, mob)
+    local n = 0
+    for _, member in pairs(player:getParty() or {}) do
+        local id = member:getID()
+        if member:getObjType() == xi.objType.PC and BotIsBot and BotIsBot(id) and member:getZoneID() == player:getZoneID() and member:isAlive() then
+            local st = state[id] or {}
+            state[id] = st
+            if word == 'attack' and mob ~= nil then
+                st.attacking = mob:getID()
+                BotAttack(id, mob)
+                BotFollow(id, mob, MELEE_STOP)
+            elseif word == 'stop' then
+                st.attacking = nil
+                BotAttackOff(id)
+                BotStop(id)
+            end
+
+            n = n + 1
+        end
+    end
+
+    return n
 end
 
 return m

@@ -53,7 +53,7 @@ enum TRUST_MOVEMENT_TYPE : int8
     //     :     mob:setMobMod(xi.mobMod.TRUST_DISTANCE, 20)
     //     : Will set the combat distance the trust tries to stick to to 20'
     // NOTE: If a Trust doesn't immediately sprint to a certain distance at the start of battle, it's probably NO_MOVE or MELEE.
-    NO_MOVE    = -1, // Will stand still providing they're within casting distance of their master and target when the fight starts. Otherwise will reposition to be within 9.0' of both
+    NO_MOVE    = -1, // Will stand still providing they're within casting distance of their master and target when the fight starts. Otherwise will reposition to be within 9.0' of the target (the master is not considered)
     NON_COMBAT = -2, // Will follow the master if first trust in party and will follow the trust in front if lower in the list.
     MELEE      = 0,  // Default: will continually reposition to stay within melee range of the target
     MID_RANGE  = 6,  // Will path at the start of battle to 6' away from the target, and try to stay at that distance
@@ -130,6 +130,12 @@ auto CTrustController::Tick(timer::time_point tick) -> Task<void>
 
     auto* PTrust = static_cast<CTrustEntity*>(POwner);
 
+    // XI: Forever Offline: marker for scripts: this xi_map honours TRUST_HOLD (trust_hold.h). Nothing else reads it.
+    if (PTrust->GetLocalVar("TRUST_HOLD_ENGINE") == 0)
+    {
+        PTrust->SetLocalVar("TRUST_HOLD_ENGINE", 1);
+    }
+
     if (!PTrust->PMaster)
     {
         co_return;
@@ -138,6 +144,12 @@ auto CTrustController::Tick(timer::time_point tick) -> Task<void>
     if (PTrust->PMaster->isCharmed)
     {
         this->Despawn();
+        co_return;
+    }
+
+    // XI: Forever Offline (2026-11-23): a fallen squad mate's body stays for a Raise (trust_entity.cpp Die): it does nothing
+    if (PTrust->isDead())
+    {
         co_return;
     }
 
@@ -743,9 +755,38 @@ auto CTrustController::OrderedTarget() -> CBattleEntity*
 }
 
 // camp: stand on its own spot around the camp (one per party slot)
+// XI: Forever Offline: true while a script holds the stock engage (bit HoldEngage) or the stock weapon skills (HoldWeaponSkill) of this
+// trust. The script writes the local vars TRUST_HOLD (mask) and TRUST_HOLD_SEQ (a counter it raises about once a second); the hold
+// runs out three seconds after the last renewal, so a script that stops, reloads or crashes never leaves the trust frozen
+// (trust_hold.h). Without TRUST_HOLD set, as on the stock server, this is always false and nothing changes.
+auto CTrustController::ScriptHolds(const uint32 bit) -> bool
+{
+    const uint32 mask = POwner->GetLocalVar("TRUST_HOLD");
+    if ((mask & bit) == 0)
+    {
+        return false;
+    }
+
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(m_Tick.time_since_epoch()).count();
+    return m_ScriptHold.Active(mask, POwner->GetLocalVar("TRUST_HOLD_SEQ"), bit, nowMs);
+}
+
 // FFXI Offline squad: true once this mate's engage delay (local var SQUAD_ENGAGE_DELAY, ms) has passed for this monster
 auto CTrustController::EngageDelayPassed(const CBattleEntity* PTarget) -> bool
 {
+    // XI: Forever Offline: a script holds the stock engage until its own test lets it go (ScriptHolds). The wait for this monster
+    // keeps running meanwhile, so the engage follows the moment the hold is lifted even if the master's swing is long past.
+    if (ScriptHolds(trust_hold::HoldEngage))
+    {
+        if (PTarget != nullptr && m_EngageWaitTarget != PTarget->id)
+        {
+            m_EngageWaitTarget = PTarget->id;
+            m_EngageWaitSince  = m_Tick;
+        }
+
+        return false;
+    }
+
     const uint32 delayMs = POwner->GetLocalVar("SQUAD_ENGAGE_DELAY");
     if (delayMs == 0 || PTarget == nullptr)
     {
@@ -1146,6 +1187,13 @@ auto CTrustController::Cast(const EntityId target, SpellID spellid) -> bool
     }
 
     auto* PSpell = spell::GetSpell(spellid);
+
+    // XI: Forever Offline: a spell id that is not in spell_list (e.g. castSpell(60000) from a script) has no CSpell: stop here instead
+    // of dereferencing a null PSpell below (access violation about two seconds later).
+    if (PSpell == nullptr)
+    {
+        return false;
+    }
 
     // XI: Forever Offline (job expansion): a song is sung on the singer and reaches the party around it; a rule may name a
     // party member as the one it is for (e.g. "a melee member lacks Minuet"). Without Pianissimo such a song can only be

@@ -35,3 +35,4 @@ lua/squad_sandbox_spots.lua
 # the 2026-11-21 additions: each player's own switches (!extras) and their bots' life stories
 lua/extras_config.lua
 lua/bots_story.txt
+lua/gm_offline.txt

@@ -264,6 +264,10 @@ void init(IPP mapIPP, bool isRunningInCI)
 
     ShowInfo("luautils: Lua initializing");
 
+    // XI: Forever Offline: this engine builds a squad Puppetmaster mate's automaton from her own record (petutils::LoadPet, puppetutils::LoadSquadAutomaton).
+    // The Squads pet table adds a Puppetmaster row only when this is set, so a build without the patch never raises a stat-less automaton.
+    lua["SQUAD_MATE_AUTOMATON"] = 1;
+
     //
     // Lua docs for math.random():
     // https://www.luadocs.com/docs/functions/math/random

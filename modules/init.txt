@@ -79,6 +79,47 @@ phoenix/dynamis/lua/
 # Squad mates
 custom/cpp/squad.cpp
 custom/lua/squad.lua
+# Party chat commands (thin squad.cpp: the chat decisions are in this file; it needs the rebuilt map server)
+custom/lua/squad_logic.lua
+# Job ability rules for party chat commands (thin squad.cpp step 2: the rules are squad_ability_rules.lua, called from this file)
+custom/lua/sq_logic.lua
+# Fixes for the party chat requests (one answer, no double casts, honest failures, ...). Each is switched off by !sqreq off
+custom/lua/squad_requests.lua
+# Revamped hook points: empty placeholder files (REVAMPED_STUB), they do nothing. Add-ons replace them. See docs/REVAMPED-HOOKS.md
+custom/lua/xk_profiles.lua
+custom/lua/xk_uses.lua
+custom/lua/xk_translate.lua
+custom/lua/xk_at_data.lua
+custom/lua/xk_say_data.lua
+custom/lua/sq_world.lua
+custom/lua/sq_owner.lua
+custom/lua/sq_plan.lua
+custom/lua/sq_backend_dev.lua
+custom/lua/sq_rows_core.lua
+custom/lua/sq_export.lua
+custom/lua/sq_rows_items.lua
+custom/lua/xk_say.lua
+custom/lua/sq_rows_say.lua
+custom/lua/sq_rows_gear.lua
+custom/lua/sq_starter.lua
+custom/lua/sq_spells.lua
+custom/lua/sq_guard.lua
+custom/lua/sq_act.lua
+custom/lua/sq_rows_needs.lua
+custom/lua/sq_rows_hate.lua
+custom/lua/sq_rows_rest.lua
+custom/lua/sq_rows_heal.lua
+custom/lua/sq_rows_thief.lua
+custom/lua/sq_rows_bard.lua
+custom/lua/sq_rows_cast.lua
+custom/lua/sq_rows_jobs.lua
+custom/lua/sq_rows_mount.lua
+custom/lua/sq_rows_boost.lua
+custom/lua/sq_rows_options.lua
+custom/lua/sq_gearview.lua
+custom/lua/sq_automaton.lua
+custom/lua/sq_profile.lua
+custom/lua/sq_gate.lua
 custom/lua/squad_space.lua
 custom/lua/squad_chain.lua
 # Gambits v2: the in-game Squad Rule Set editor's server side (!gsq, GambitsV2 addon); needs custom/lua/squad.lua above
@@ -159,9 +200,13 @@ custom/lua/crowds.lua
 custom/cpp/bots.cpp
 
 custom/lua/bots.lua
+# An add-on that runs squad mates (guards v1): its file loads after squad_bard_walk (it reads the Squads state those files set up)
+custom/lua/addon_owner.lua
 
 # Placeholder names: NM placeholders show "placeholder" as their name (data: tools/gen_placeholder_names.py)
 custom/lua/placeholder_names.lua
 
 # Loaded LAST: overrides here win over the era/phoenix folders above (fast travel overrides the Survival Guide menu)
 custom/late
+# Dev only: edit a Squads Lua file while the server runs and !squad reload (GM) / the file watcher reloads it in order. Does nothing unless a Squads file is saved or the command is used. Keep this line last.
+custom/lua/squad_reload.lua

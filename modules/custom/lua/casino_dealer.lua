@@ -7,8 +7,9 @@
 -- Why the NPC rolls for the player: the server's /random is answered inside the map server and never reaches a script,
 -- and /random is blocked while an NPC event is open, so a script cannot read the player's own /random.
 --
--- Safety: the trade is never confirmed, so nothing is taken until "Roll" is chosen; the gil is checked again at that
--- moment, taken, and the result paid at once. Closing the menu or leaving costs nothing.
+-- Safety: the trade is completed like any NPC trade, so the bet is taken when it is handed over and the window closes
+-- cleanly. The bet is also written to a char var until it is played, so a bet that is walked away from, cancelled or
+-- cut off by a disconnect is paid back at the next visit.
 -----------------------------------
 require('modules/module_utils')
 -----------------------------------
@@ -37,28 +38,81 @@ local function gilText(n)
     return (out:gsub('^,', ''))
 end
 
-local function play(player, npc, bet)
-    player:setFreezeFlag(false)
+-- The bet is taken for good when the trade is completed (tradeComplete), like any NPC trade: an unfinished trade left the
+-- game window waiting, so the winnings only showed after zoning. While the bet is on the table it is also written to a
+-- char var, so a player who disconnects, zones or walks away from the menu gets it back (paid at their next visit).
+local PENDING = '[Casino]Pending'
 
-    if bet <= 0 or player:getGil() < bet then
-        say(player, npc, 'You do not have that much gil any more.')
+-- Give gil back to the player in one step and check the balance moved; sets it directly if add did not take.
+local function payOut(player, amount)
+    if amount <= 0 then
+        return true
+    end
+
+    local before = player:getGil()
+    player:addGil(amount)
+
+    if player:getGil() == before + amount then
+        return true
+    end
+
+    player:setGil(before + amount)
+
+    if player:getGil() == before + amount then
+        print(string.format('[casino_dealer] addGil did not change gil for %s; set it directly instead', player:getName()))
+        return true
+    end
+
+    print(string.format('[casino_dealer] could not pay %d gil to %s (had %d, has %d)', amount, player:getName(), before, player:getGil()))
+    return false
+end
+
+-- pays back a bet that was never played; the marker is cleared first so it can never be paid twice
+local function refundPending(player, npc)
+    local bet = player:getCharVar(PENDING)
+    if bet <= 0 then
         return
     end
 
-    player:delGil(bet)
+    player:setCharVar(PENDING, 0)
+
+    if payOut(player, bet) then
+        say(player, npc, string.format('Your bet of %s gil was not played. It is returned.', gilText(bet)))
+    else
+        player:setCharVar(PENDING, bet)
+        say(player, npc, 'I could not return your bet just now. Talk to me again in a moment.')
+    end
+end
+
+local function play(player, npc, bet)
+    player:setFreezeFlag(false)
+
+    if player:getCharVar(PENDING) ~= bet then
+        return -- the bet is no longer on the table (already played or refunded)
+    end
 
     local mine   = math.random(0, MAX_ROLL - 1)
     local theirs = math.random(0, MAX_ROLL - 1)
+
+    player:setCharVar(PENDING, 0)
 
     say(player, npc, string.format('Dice Roll! %s rolls %d.', player:getName(), mine))
     say(player, npc, string.format('Dice Roll! %s rolls %d.', DEALER_NAME, theirs))
 
     if mine > theirs then
-        player:addGil(bet * 2)
-        say(player, npc, string.format('You win! Your %s gil is doubled: %s gil paid out.', gilText(bet), gilText(bet * 2)))
+        if payOut(player, bet * 2) then
+            say(player, npc, string.format('You win! Your %s gil is doubled: %s gil paid out.', gilText(bet), gilText(bet * 2)))
+        else
+            player:setCharVar(PENDING, bet * 2) -- it will be paid at the next visit
+            say(player, npc, 'You win, but I could not pay just now. Talk to me again in a moment.')
+        end
     elseif mine == theirs then
-        player:addGil(bet)
-        say(player, npc, 'A tie! Your bet is returned.')
+        if payOut(player, bet) then
+            say(player, npc, 'A tie! Your bet is returned.')
+        else
+            player:setCharVar(PENDING, bet)
+            say(player, npc, 'A tie, but I could not return your bet just now. Talk to me again in a moment.')
+        end
     else
         say(player, npc, string.format('The house wins. You lose %s gil.', gilText(bet)))
     end
@@ -83,11 +137,17 @@ local function offerBet(player, npc, bet)
                 'Never mind.',
                 function(playerArg)
                     playerArg:setFreezeFlag(false)
+                    playerArg:timer(50, function(entity)
+                        refundPending(entity, npc)
+                    end)
                 end,
             },
         },
         onCancelled = function(playerArg)
             playerArg:setFreezeFlag(false)
+            playerArg:timer(50, function(entity)
+                refundPending(entity, npc)
+            end)
         end,
         onEnd = function(playerArg)
             playerArg:setFreezeFlag(false)
@@ -100,14 +160,27 @@ local function onTrade(player, npc, trade)
 
     -- gil in a trade takes one slot, so a gil-only trade has an item count of 1 (like other gil trades in the scripts)
     if bet > 0 and trade:getItemCount() == 1 then
-        -- nothing is taken yet: the trade is not confirmed, the gil stays with the player
-        offerBet(player, npc, bet)
+        refundPending(player, npc) -- an older bet that was never played comes back first
+
+        if player:getCharVar(PENDING) ~= 0 then
+            return
+        end
+
+        player:setCharVar(PENDING, bet)
+
+        if player:tradeComplete() then
+            offerBet(player, npc, bet)
+        else
+            player:setCharVar(PENDING, 0)
+            say(player, npc, 'Something went wrong with the trade. Nothing was taken.')
+        end
     else
         say(player, npc, 'Gil only, please. Trade me the amount you want to bet.')
     end
 end
 
 local function onTrigger(player, npc)
+    refundPending(player, npc)
     say(player, npc, 'Feeling lucky? Trade me the gil you want to bet. We each roll 0 to 999. Roll higher and I double your gil; a tie gives it back.')
 end
 

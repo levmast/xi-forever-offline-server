@@ -32,9 +32,11 @@
 namespace
 {
 
+using gambits::reach::FromAbilityData;
 using gambits::reach::FromSpellData;
 using gambits::reach::PartyReach;
 using gambits::reach::SpellReach;
+using gambits::reach::TrustPartyReach;
 using gambits::reach::WithinReach;
 
 struct Pos
@@ -56,6 +58,18 @@ const auto Shellra   = FromSpellData(1, 0.0f, 10.0f);   // 130
 const auto Blink     = FromSpellData(1, 0.0f, 0.0f);    // 53
 const auto Dia       = FromSpellData(4, 20.0f, 0.0f);   // 23 (enemy only)
 const auto Raise     = FromSpellData(32, 20.0f, 0.0f);  // 12 (dead members only)
+
+const auto ArmysPaeon     = FromSpellData(129, 20.0f, 10.0f); // 378 (a song: the singer, or a member under Pianissimo; range 20, radius 10)
+const auto ValorMinuet    = FromSpellData(129, 20.0f, 10.0f); // 394
+const auto AdvancingMarch = FromSpellData(129, 20.0f, 10.0f); // 419
+const auto NoSelfSpell = FromSpellData(128, 20.0f, 0.0f);  // (Pianissimo bit without a self target: not a song on the singer)
+
+// abilities.sql rows (v0.3.2): { validTarget, radius }
+const auto FightersRoll = FromAbilityData(1, 8.0f);  // Corsair's rolls: used on oneself, radius 8
+const auto Warcry       = FromAbilityData(1, 14.0f); // 32
+const auto HasteSamba   = FromAbilityData(1, 0.0f);  // self only, no area
+const auto CuringWaltz  = FromAbilityData(3, 0.0f);  // single target
+const auto DivineWaltz  = FromAbilityData(27, 10.0f); // 195 (valid targets 27: usable on a party member too, the area is around that member)
 
 const std::optional<SpellReach> NoSpell = std::nullopt; // a job ability, ranged attack or mixed rule
 
@@ -196,4 +210,71 @@ TEST_CASE("gambits reach: the reported Squad healer position (squad_space.lua) i
     }
 
     CHECK_FALSE(Reaches(true, Protectra, tankSeenFrom(opposite))); // ...but Protectra still would not cover the tank
+}
+
+TEST_CASE("gambits reach: a song is sung on the singer and reaches only its radius", "[gambits][reach][songs]")
+{
+    // valid targets 129 = self + Pianissimo target; it used to be neither "self only" nor "a party member" and fell back to 15
+    for (const auto& song : { ArmysPaeon, ValorMinuet, AdvancingMarch })
+    {
+        REQUIRE(song.has_value());
+        CHECK(song->selfOnly);
+        CHECK(song->radius == 10.0f);
+        CHECK(PartyReach(true, song, 0.0f, 0.0f) == 10.0f);
+        CHECK(Reaches(true, song, { 9.9f, 0.0f, 0.0f }));
+        CHECK_FALSE(Reaches(true, song, { 10.1f, 0.0f, 0.0f })); // a melee member 12 yalms away is not a valid target any more
+        CHECK_FALSE(Reaches(true, song, { 14.0f, 0.0f, 0.0f }));
+    }
+
+    CHECK_FALSE(NoSelfSpell.has_value());
+}
+
+TEST_CASE("gambits reach: job abilities with an area reach their radius, the rest keep 15", "[gambits][reach][abilities]")
+{
+    REQUIRE(FightersRoll.has_value());
+    CHECK(FightersRoll->selfOnly);
+    CHECK(PartyReach(true, FightersRoll, 0.0f, 0.0f) == 8.0f);
+    CHECK(Reaches(true, FightersRoll, { 7.9f, 0.0f, 0.0f }));
+    CHECK_FALSE(Reaches(true, FightersRoll, { 8.1f, 0.0f, 0.0f }));
+    REQUIRE(Warcry.has_value());
+    CHECK(PartyReach(true, Warcry, 0.0f, 0.0f) == 14.0f);
+    CHECK_FALSE(DivineWaltz.has_value()); // (cast on a party member: not an area around oneself, keeps 15)
+
+    CHECK_FALSE(HasteSamba.has_value());  // (no area: the inherited reach, as before)
+    CHECK_FALSE(CuringWaltz.has_value()); // (single target: the inherited reach, as before)
+    CHECK(PartyReach(true, HasteSamba, 0.0f, 0.0f) == 15.0f);
+}
+
+TEST_CASE("gambits reach: ordinary trusts keep 15 except for an area effect on oneself", "[gambits][reach][trusts]")
+{
+    // Kupipi Protectra / Shellra, Qultada's rolls, a bard's songs: the radius. Everything else (cures, single target abilities,
+    // no spell known): the 15 yalms every party target always had.
+    CHECK(TrustPartyReach(Protectra) == 10.0f);
+    CHECK(TrustPartyReach(Shellra) == 10.0f);
+    CHECK(TrustPartyReach(ArmysPaeon) == 10.0f);
+    CHECK(TrustPartyReach(FightersRoll) == 8.0f);
+    CHECK(TrustPartyReach(Warcry) == 14.0f);
+
+    CHECK(TrustPartyReach(Cure) == 15.0f);
+    CHECK(TrustPartyReach(Curaga) == 15.0f); // (cast on the member: the 15 stays, the area is around them)
+    CHECK(TrustPartyReach(Haste) == 15.0f);
+    CHECK(TrustPartyReach(Blink) == 15.0f); // (self only without an area: not an area rule)
+    CHECK(TrustPartyReach(NoSpell) == 15.0f);
+    CHECK(TrustPartyReach(HasteSamba) == 15.0f);
+    CHECK(TrustPartyReach(CuringWaltz) == 15.0f);
+    CHECK(TrustPartyReach(Dia) == 15.0f);
+}
+
+TEST_CASE("gambits reach: the predicted loop - a member 10 to 15 yalms away is no longer a target of an area rule", "[gambits][reach][loop]")
+{
+    // The rule "a party member lacks Protect > Protectra" (Kupipi) or "... Minuet > Minuet" (a squad bard) picked the first
+    // member inside 15 yalms. Protectra and the songs reach 10, so under the retail area range the cast landed on nobody new
+    // and the rule picked the same member again. Both kinds of caster now stop at the radius.
+    const Pos farMember{ 12.0f, 0.0f, 0.0f };
+    CHECK(WithinReach(Pos{ 0, 0, 0 }, farMember, 15.0f));                                // before
+    CHECK_FALSE(WithinReach(Pos{ 0, 0, 0 }, farMember, TrustPartyReach(Protectra)));    // ordinary trust now
+    CHECK_FALSE(Reaches(true, Protectra, farMember));                                   // squad mate (already)
+    CHECK_FALSE(Reaches(true, ArmysPaeon, farMember));                                 // squad bard song (was reachable at 15)
+    CHECK_FALSE(WithinReach(Pos{ 0, 0, 0 }, farMember, TrustPartyReach(FightersRoll))); // Qultada's roll (8)
+    CHECK(WithinReach(Pos{ 0, 0, 0 }, Pos{ 7.0f, 0, 0 }, TrustPartyReach(FightersRoll))); // a member inside the roll still is
 }

@@ -23,6 +23,7 @@
 
 #include <common/macros.h>
 #include <map/entities/mob_entity.h>
+#include <map/entities/types/automaton_info.h>
 
 #include <common/types/flag.h>
 
@@ -49,6 +50,13 @@ public:
     void setReleased(bool released);
 
     auto passiveTrust() -> IsPassiveTrust;
+
+    // XI: Forever Offline: a squad Puppetmaster's own automaton record (frame, head, attachments, stats), built when she raises it
+    // (puppetutils::LoadSquadAutomaton). It is hers alone: her master's automatonInfo_ is never read or written for her.
+    auto squadAutomaton() -> AutomatonInfo&
+    {
+        return squadAutomaton_;
+    }
 
     // Squad mates (modules/custom/cpp/squad.cpp): the id of the squad record, 0 for a normal trust
     void setSquadId(uint32 squadId)
@@ -117,6 +125,13 @@ private:
     uint32         squadId_{};
     uint8          squadRace_{};
     CMobSpellList* squadSpellList_{};
+    AutomatonInfo  squadAutomaton_{};
 
     std::array<uint16, 16> squadEquip_{};
 };
+
+// true for a squad mate, false for anything else (a retail trust included)
+inline auto IsSquadMate(const CBaseEntity* PEntity) -> bool
+{
+    return PEntity != nullptr && PEntity->objtype == TYPE_TRUST && static_cast<const CTrustEntity*>(PEntity)->isSquadMate();
+}

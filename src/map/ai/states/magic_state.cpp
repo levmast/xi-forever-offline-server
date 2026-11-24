@@ -26,6 +26,7 @@
 #include "ai/ai_container.h"
 #include "ai/controllers/pet_controller.h"
 #include "ai/states/inactive_state.h"
+#include "common/settings.h"
 #include "common/utils.h"
 #include "data/enums/mob_mod.h"
 #include "enmity_container.h"
@@ -43,8 +44,15 @@
 #include "utils/battleutils.h"
 #include "utils/zoneutils.h"
 
+// XI Forever Offline: map.TRUST_AOE_RANGE = 'retail' (default) | 'extended'. Retail: trusts, squad mates and pets obey the area
+// radius and the player cast range like a player. Extended: the stock behavior of the server (they skip the radius test, and
+// trusts cast to 28.5 yalms). settings::get is cached per thread and follows a settings reload.
 namespace
 {
+auto trustAoeRetail() -> bool
+{
+    return settings::get<std::string>("map.TRUST_AOE_RANGE") != "extended";
+}
 
 // distance a player has to cover before a cast counts them as having moved
 constexpr float movementThreshold = 0.3f;
@@ -420,7 +428,10 @@ auto CMagicState::CanCastSpell(CBattleEntity* PTarget, bool isEndOfCast) -> bool
         return false;
     }
 
-    if (dynamic_cast<const CCharEntity*>(m_PEntity) != nullptr)
+    // XI Forever Offline: with map.TRUST_AOE_RANGE = 'retail' trusts (and so squad mates) follow the player rule, the spell's own
+    // range plus both hitboxes, not the 28.5 yalm mob rule. 'extended' keeps the stock 28.5.
+    const bool trustUsesPlayerRule = m_PEntity->objtype == TYPE_TRUST && trustAoeRetail();
+    if (dynamic_cast<const CCharEntity*>(m_PEntity) != nullptr || trustUsesPlayerRule)
     {
         float spellRange = m_PSpell->getRange() + PTarget->modelHitboxSize + m_PEntity->modelHitboxSize;
 
@@ -439,7 +450,7 @@ auto CMagicState::CanCastSpell(CBattleEntity* PTarget, bool isEndOfCast) -> bool
         }
     }
 
-    if (dynamic_cast<CMobEntity*>(m_PEntity))
+    if (!trustUsesPlayerRule && dynamic_cast<CMobEntity*>(m_PEntity))
     {
         if (!isWithinDistance(m_PEntity->loc.p, PTarget->loc.p, 28.5f))
         {

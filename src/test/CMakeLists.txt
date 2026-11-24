@@ -67,7 +67,9 @@ xi_add_executable(xi_test testserver.rc
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/zones/settings_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/entity_list_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/fishing_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gambits_backoff_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/gambits_reach_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/gambits_sata_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/huffman_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/item_container_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/map_session_container_tests.cpp
@@ -76,6 +78,7 @@ xi_add_executable(xi_test testserver.rc
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/roam_region_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/scheduler_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/transport_voyage_tests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/trust_hold_tests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/ximesh_query_tests.cpp
 )
 add_dependencies(xi_test data_schema_generate)

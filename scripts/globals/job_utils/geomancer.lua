@@ -508,6 +508,15 @@ xi.job_utils.geomancer.spawnLuopan = function(player, target, spell)
     end
 
     local luopan       = player:getPet()
+    if luopan == nil then
+        return
+    end
+
+    -- a squad mate casts without an action packet: the Luopan goes to the spell's target
+    if player:isTrust() then
+        luopan:setPos(target:getXPos(), target:getYPos(), target:getZPos(), target:getRotPos())
+    end
+
     local spellID      = spell:getID()
     local modelID      = geoData[spellID].luopanModel
     local effect       = geoData[spellID].effect

@@ -277,10 +277,11 @@ local function usage(player)
     say(player, '!squad engage first | normal   - mates join as soon as you engage (the default), or after your first swing (retail)')
     say(player, '!squad attack   - your squad attacks the monster you have targeted, without you drawing your weapon (also while you rest)   |   !squad stop')
     say(player, '!squad sync <name> | off   - Level Sync to a player, bot or squad mate in your party (party menu works too)')
-    say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call)')
-    say(player, '!squad autoequip now [slot]   - put the best given gear on once, right now, and keep choosing by hand')
+    say(player, '!squad autoequip on | off   - mates wear the best gear you gave the squad (picked again at each call); with "Squad gets all gear" on, the best their jobs can wear')
+    say(player, '!squad autoequip now [slot]   - put the best gear on once, right now, and keep choosing by hand')
     say(player, '!squad spells   - spells your squad learned from scrolls (when the launcher option is on; trade scrolls to a mate)')
     say(player, '!squad spells <slot>   - every spell one squad mate has now')
+    say(player, '!squad juice   - the juices each mate carries (trade juices to a mate: it drinks one when its MP runs low)')
     say(player, '!squad delay <slot> <0-10>   - seconds a mate waits before joining a fight (let the tank get hate first)')
     say(player, '!squad blu <slot> [set | unset <spell>] | auto   - a Blue Mage mate\'s set blue magic (automatic until you pick)')
     say(player, '!squad follow close | normal | far   - how closely your mates follow you')
@@ -321,6 +322,16 @@ if not mealsLoaded or type(meals) ~= 'table' then
 end
 
 food.meals = meals -- (the command function below is at LuaJIT's limit of 60 outside names: it reaches this one through food)
+
+do -- (2026-11-23, Frost, Syfin) squad mates drink the juices you trade them (squad_juice.lua); reached as xi.squad.juice
+    local okJuice, juiceModule = pcall(require, 'modules/custom/lua/squad_juice')
+    xi = xi or {}
+    xi.squad = xi.squad or {}
+    xi.squad.juice = okJuice and type(juiceModule) == 'table' and juiceModule or nil
+    if not xi.squad.juice then
+        print('[squad] could not load squad_juice.lua: ' .. tostring(juiceModule))
+    end
+end
 
 local function chooseFood(job, level)
     local role = food.roleByJob and food.roleByJob[job]
@@ -559,6 +570,11 @@ local function eatIfNeeded(mob)
         speakFromMob(mob, 'eat', { food = meal.name })
     end
 end
+
+-- (v0.3.3, G14) "feed us" in party chat (squad_requests.lua): let a mate eat now if it is not eating, by the same rules as every combat tick
+xi = xi or {}
+xi.squad = xi.squad or {}
+xi.squad.eatNow = eatIfNeeded
 
 -- WAR MNK WHM BLM RDM THF (job ids 1-6) are available from the start. The other jobs are advanced jobs and
 -- only work for squad mates once your character has unlocked them (like the job unlock quests in the game).
@@ -1479,6 +1495,22 @@ local function campTick(mob)
 
             c.drags = nil
             c.state, c.since = 'fighting', now -- back at camp with it (or it is gone)
+            -- (2026-11-23, Eureka629; the user's choice: the squad takes what the puller brings) the monster brought to camp is
+            -- the squad's fight even while you rest or keep your weapon away: everyone stands up and goes in, the tank
+            -- included (it provokes as soon as it is engaged), the same order !squad attack gives
+            pcall(function()
+                local foe = c.targetEnt
+                if foe ~= nil and foe:isAlive() and not player:isEngaged() and player:getLocalVar('SQUAD_ATTACK_TARGET') == 0 then
+                    player:setLocalVar('SQUAD_ATTACK_TARGET', foe:getTargID())
+                    player:setLocalVar('SQUAD_ATTACK_ZONE', player:getZoneID())
+                    player:setLocalVar('SQUAD_ATTACK_SEEN', os.time())
+                    for _, trust in ipairs(trusts) do
+                        if trust:isAlive() and trust:getAnimation() == xi.animation.HEALING then
+                            trust:setAnimation(xi.animation.NONE)
+                        end
+                    end
+                end
+            end)
             print(string.format('[squad] pull: %s is back (or the target is gone) after %ds', puller:getPacketName(), now - (c.pullStart or now)))
         elseif now - c.since > CAMP_PULL_TIMEOUT then
             campStop(puller)
@@ -2261,6 +2293,11 @@ xi.squad.onPartyChat = function(player, text)
         return
     end
 
+    -- (v0.3.3, G19) a request a squad mate just took ("sneak me") is an order, not conversation: the helper does not answer it a second time
+    if xi.squad.lineTaken ~= nil and xi.squad.lineTaken(player, text) then
+        return
+    end
+
     text = chatClean(text)
     if text == '' then
         return
@@ -2418,6 +2455,46 @@ function squadOutfitFix(outfit)
     return outfit, #dropped > 0
 end
 
+-- (2026-11-22, the user: with the launcher's "Squad gets all gear" on, auto-equip did nothing, because it only looked
+-- at gear that was given) With that switch on every piece counts as given, so auto-equip chooses from everything the
+-- job can wear at its level: GetSquadGearPool (squad.cpp) hands over all of it at once, read once per job while the
+-- server runs. From that pool a piece is only put on when it adds something for the job: a costume, a fishing rod or
+-- a linkshell pearl is "wearable" too. Never put on by itself: the game masters' Judge's set, which every job can
+-- wear at level 1 (it stays in the gear picker), a thing with damage but no weapon skill (the Soulgauger), a bow, gun
+-- or throwing weapon (and its ammunition) for a job with no skill in it (a Black Mage with a bow), and a piece made
+-- for another race (the game's own rule, CItemEquipment::isEquippableByRace). Gear you gave is chosen as before, and
+-- wins a tie.
+SQUAD_GEAR_POOL = SQUAD_GEAR_POOL or {}
+function squadAutoSkips(name)
+    return type(name) == 'string' and name:lower():find('^judges_') ~= nil
+end
+
+function squadAutoPoolFits(info, race, job)
+    local skill = info.skill or 0
+    if squadAutoSkips(info.name) or ((info.dmg or 0) > 0 and skill == 0) then
+        return false
+    end
+
+    if skill >= 25 and skill <= 27 then
+        local ranks = type(SQUAD_GEAR_SCORE) == 'table' and type(SQUAD_GEAR_SCORE.ranks) == 'table' and SQUAD_GEAR_SCORE.ranks[job] or nil
+        if ranks == nil or ranks[skill] == nil then
+            return false
+        end
+    end
+
+    local only = type(info.mods) == 'table' and xi.mod and info.mods[xi.mod.EQUIPMENT_ONLY_RACE] or 0
+    return not (only > 0 and math.floor(only / 2 ^ (race - 1)) % 2 == 0)
+end
+
+function squadGearPool(job)
+    if SQUAD_GEAR_POOL[job] == nil and type(GetSquadGearPool) == 'function' then
+        local ok, pool = pcall(GetSquadGearPool, job, 99)
+        SQUAD_GEAR_POOL[job] = ok and type(pool) == 'table' and pool or false
+    end
+
+    return SQUAD_GEAR_POOL[job] or nil
+end
+
 function squadAutoEquip(player, mate)
     local job, lvl = mate.mjob, levelsFor(mate)
     -- (2026-11-22, lilibun: a Warrior in a Silver Hairpin, the highest-level piece it could wear) every piece is rated
@@ -2427,7 +2504,8 @@ function squadAutoEquip(player, mate)
     local rate = type(SQUAD_GEAR_SCORE) == 'table' and SQUAD_GEAR_SCORE.rate or nil
     SQUAD_ITEM_INFO = SQUAD_ITEM_INFO or {} -- (what an item is does not change while the server runs)
     local cand, scored = {}, rate ~= nil
-    for itemId in pairs(GetSquadUnlocks(player:getID()) or {}) do
+    local given = GetSquadUnlocks(player:getID()) or {}
+    for itemId in pairs(given) do
         local info = SQUAD_ITEM_INFO[itemId]
         if info == nil then
             info = GetSquadItemInfo(itemId)
@@ -2442,7 +2520,21 @@ function squadAutoEquip(player, mate)
                 scored = score ~= nil
             end
 
-            cand[#cand + 1] = { id = itemId, info = info, score = score }
+            cand[#cand + 1] = { id = itemId, info = info, score = score, given = true }
+        end
+    end
+
+    -- "Squad gets all gear": the rest of what the job can wear, only the pieces that add something for it
+    local pool = scored and squadAllGear() and squadGearPool(job) or nil
+    if pool then
+        local race = (mate.race or 0) > 0 and mate.race or 1 -- (a mate with no race chosen is a Hume male)
+        for itemId, info in pairs(pool) do
+            if not given[itemId] and info.valid and info.level <= lvl and squadAutoPoolFits(info, race, job) then
+                local ok, value = pcall(rate, info, job, lvl)
+                if ok and type(value) == 'number' and value > (info.level or 0) * 0.005 + 0.0001 then
+                    cand[#cand + 1] = { id = itemId, info = info, score = value }
+                end
+            end
         end
     end
 
@@ -2455,7 +2547,15 @@ function squadAutoEquip(player, mate)
             return a.score > b.score
         end
 
-        return a.info.level > b.info.level or (a.info.level == b.info.level and a.id < b.id)
+        if (a.given == true) ~= (b.given == true) then
+            return a.given == true -- (as good as each other: the piece you gave)
+        end
+
+        if a.info.level ~= b.info.level then
+            return a.info.level > b.info.level
+        end
+
+        return a.id < b.id
     end)
 
     local used, pick = {}, {}
@@ -2554,6 +2654,16 @@ function squadTeamTick(mob)
 end
 
 local function callMate(player, mate)
+    local present = summonedMate(player, mate.id)
+    if present ~= nil and not present:isAlive() then
+        -- (2026-11-23) its fallen body is still here, waiting for a Raise: take it away and call the mate fresh
+        pcall(SquadDismissMate, present)
+        player:timer(1500, function(entity)
+            callMate(entity, mate)
+        end)
+        return
+    end
+
     if isSummoned(player, mate.id) then
         say(player, string.format('%s is already with you.', mate.name))
         return
@@ -2576,17 +2686,9 @@ local function callMate(player, mate)
     -- (2026-11-19, Meli, lilibun: synced mates came out naked and unarmed) under a Level Sync a piece above the synced
     -- level used to be left off entirely. Now: weapons and ammo (slots 0-3) stay on, so the mate can fight and use
     -- weapon skills; armour above the level gives no stats but still shows (as a look), unless a lockstyle is set there.
-    local outfit = {}
-    local looks = squadLockstyleGet(player, mate.id)
-    for slot, itemId in pairs(mate.equip[mate.mjob]) do
-        if slot ~= STARTER_MARK then
-            if not synced or itemLevel(itemId) <= main or (type(slot) == 'number' and slot <= 3) then
-                outfit[slot] = itemId
-            elseif SQUAD_LS_SLOTS[slot] and looks[slot] == nil then
-                looks[slot] = itemId
-            end
-        end
-    end
+    local outfit, looks = require('modules/custom/lua/squad_equipment').projectSpawnGear(
+        mate.equip[mate.mjob], squadLockstyleGet(player, mate.id), main, synced,
+        itemLevel, SQUAD_LS_SLOTS, STARTER_MARK)
 
     local okFix, _, fixed = pcall(function() return squadOutfitFix(outfit) end)
     if okFix and fixed then
@@ -2645,12 +2747,24 @@ local function callMate(player, mate)
     player:timer(1500, function(entity)
         entity:reloadParty()
     end)
+    -- (2026-11-23, Jker_s81, Rysan, Meli: the first mate out after zoning or a warp had no armor or the wrong outfit)
+    -- the look is in the spawn packet only; a client still loading the area loses it. Send it again a little later.
+    if SquadRefreshLook then
+        for _, wait in ipairs({ 4000, 10000 }) do
+            trust:timer(wait, function(mob)
+                pcall(SquadRefreshLook, mob)
+            end)
+        end
+    end
     trust:setLocalVar('SQUAD_CAP', cap or 0)  -- the level it was synced to, to notice when yours changes
     trust:setLocalVar('SQUAD_OWN', jobLevel(mate, mate.mjob))
 
     if dialogue.speakOnSpawn then
         local okPack, saidPack = false, false
-        if type(xi.squad.pack) == 'table' then
+        -- (2026-11-23, Waxworks: "only the first one I summon uses my greetings") the pack's recruit / bond / race lines
+        -- came first and the mate's own greetings were skipped. A mate with its own greeting lines always uses them.
+        local own = dialogue.linesByName and dialogue.linesByName[mate.name] and dialogue.linesByName[mate.name].spawn
+        if type(xi.squad.pack) == 'table' and not (type(own) == 'table' and #own > 0) then
             okPack, saidPack = pcall(xi.squad.pack.onCall, player, trust, mate.name, mate.race, mate.mjob, jobLevel(mate, mate.mjob))
         end
 
@@ -2695,6 +2809,9 @@ local function callMate(player, mate)
         end
 
         pcall(squadCutsceneTick, mobArg, owner)
+        if xi.squad.juice then
+            pcall(xi.squad.juice.tick, mobArg) -- drinks a juice when its MP runs low (squad_juice.lua)
+        end
         campTick(mobArg)
         if restTick ~= nil then
             restTick(mobArg)
@@ -2703,10 +2820,18 @@ local function callMate(player, mate)
             resyncSquad(mobArg)
         end
         -- (Jon Tanta, 2026-11-21) SQUAD_IDLE (trust_controller.cpp): a mate the player has stopped gets no built-in Thief positioning
-        if squadThiefTick ~= nil and mobArg:getLocalVar('SQUAD_IDLE') == 0 and mobArg:isAlive() and mobArg:getMaster() ~= nil then
+        if squadThiefTick ~= nil and mobArg:getLocalVar('ADDON_OWNED') == 0 and mobArg:getLocalVar('SQUAD_IDLE') == 0 and mobArg:isAlive() and mobArg:getMaster() ~= nil then
             pcall(squadThiefTick, mobArg)
         end
-        squadTeamTick(mobArg) -- (spacing and the skillchain wait, once a second)
+        -- SQUAD_SEAM v2 begin sr_tick
+        if type(rawget(_G, 'SQUAD_PROFILE')) == 'table' and type(SQUAD_PROFILE.tick) == 'function' then
+            pcall(SQUAD_PROFILE.tick, mobArg)
+        end
+        -- SQUAD_SEAM v2 end sr_tick
+        -- SQUAD_SEAM v1 (team tick): an add-on owns this mate, so Squads' spacing (TRUST_DISTANCE), chain and ext chain stay off it
+        if mobArg:getLocalVar('ADDON_OWNED') == 0 then
+            squadTeamTick(mobArg) -- (spacing and the skillchain wait, once a second)
+        end
         chatTick(mobArg)
         if type(xi.squad.pack) == 'table' then
             pcall(xi.squad.pack.tick, mobArg) -- (pack lines: fights and quiet moments while the AI is quiet)
@@ -3049,6 +3174,10 @@ xi.squad.attackOrder = function(player, stop)
     if stop then
         local had = player:getLocalVar('SQUAD_ATTACK_TARGET') ~= 0
         player:setLocalVar('SQUAD_ATTACK_TARGET', 0)
+        if xi.bots and xi.bots.partyOrder then
+            local okBots, n = pcall(xi.bots.partyOrder, player, 'stop')
+            had = had or (okBots and (n or 0) > 0)
+        end
         if not player:isEngaged() then
             for _, mate in ipairs(mates) do
                 if mate:isEngaged() and not xi.squad.campHere(player) then
@@ -3075,7 +3204,15 @@ xi.squad.attackOrder = function(player, stop)
         return false
     end
 
-    if #mates == 0 then
+    -- (2026-11-23, Yenkei) bot players in your party take the order too
+    local botCount = 0
+    for _, member in pairs(player:getParty() or {}) do
+        if member:getObjType() == xi.objType.PC and BotIsBot and BotIsBot(member:getID()) then
+            botCount = botCount + 1
+        end
+    end
+
+    if #mates == 0 and botCount == 0 then
         say(player, 'None of your squad mates is out. Call them first (!squad call all).')
         return false
     end
@@ -3103,6 +3240,10 @@ xi.squad.attackOrder = function(player, stop)
         if mate:getAnimation() == xi.animation.HEALING then
             mate:setAnimation(xi.animation.NONE) -- (sitting with you: up, the fight is on)
         end
+    end
+
+    if botCount > 0 and xi.bots and xi.bots.partyOrder then
+        pcall(xi.bots.partyOrder, player, 'attack', mob)
     end
 
     say(player, 'Your squad attacks the ' .. name .. '. Stay out of it if you like: no need to draw your weapon. !squad stop calls them back.')
@@ -3354,6 +3495,69 @@ function squadKeepGear()
     return ok and type(c) == 'table' and c.keep_gear == true
 end
 
+-- (2026-11-23, Meli; the user: "when squad mates die you should be able to raise them") a fallen mate stays where it fell,
+-- in your party (trust_entity.cpp Die, main.SQUAD_MATES_RAISABLE), until it is raised or RAISE_WAIT_SECONDS pass.
+-- Raise, Raise II, Raise III and Arise (scripts/actions/spells/white) call xi.squad.onRaised: the body leaves and the
+-- mate is called back at once (no call cooldown) with the HP that raise gives a player: 10 / 25 / 50 / 100%.
+xi.squad.RAISE_WAIT_SECONDS = 300
+xi.squad.RAISE_HP = { 0.10, 0.25, 0.50, 1.00 }
+
+xi.squad.onMateFell = function(mob)
+    local owner = mob:getMaster()
+    local mateId = mob:getLocalVar('SQUAD_ID')
+    if owner == nil or owner:getObjType() ~= xi.objType.PC or mateId == 0 then
+        return
+    end
+
+    local token = os.time()
+    mob:setLocalVar('SQUAD_FELL_AT', token)
+    owner:printToPlayer(string.format('%s has fallen. Raise them within %d minutes, or call them again.', mob:getPacketName(),
+        math.floor(xi.squad.RAISE_WAIT_SECONDS / 60)), xi.msg.channel.SYSTEM_3)
+    owner:timer(xi.squad.RAISE_WAIT_SECONDS * 1000, function(entity)
+        local body = summonedMate(entity, mateId)
+        if body ~= nil and not body:isAlive() and body:getLocalVar('SQUAD_FELL_AT') == token then
+            pcall(SquadDismissMate, body)
+        end
+    end)
+end
+
+xi.squad.onRaised = function(caster, target, level)
+    local owner = target:getMaster()
+    local mateId = target:getLocalVar('SQUAD_ID')
+    if owner == nil or owner:getObjType() ~= xi.objType.PC or mateId == 0 or target:isAlive() then
+        return false
+    end
+
+    local mate = nil
+    for _, m in ipairs(GetSquad(owner:getID()) or {}) do
+        if m.id == mateId then
+            mate = m
+        end
+    end
+
+    if mate == nil then
+        return false
+    end
+
+    local share = xi.squad.RAISE_HP[level] or xi.squad.RAISE_HP[1]
+    pcall(SquadDismissMate, target)
+    owner:timer(1500, function(entity)
+        if isSummoned(entity, mateId) then
+            return
+        end
+
+        callMate(entity, mate)
+        local back = summonedMate(entity, mateId)
+        if back ~= nil then
+            back:setHP(math.max(1, math.floor(back:getMaxHP() * share)))
+            back:setMP(0)
+            entity:printToPlayer(string.format('%s is back on their feet.', mate.name), xi.msg.channel.SYSTEM_3)
+        end
+    end)
+
+    return true
+end
+
 xi.squad.onTrade = function(player, trust, items)
     local who = trust:getPacketName()
     -- the squad belongs to the trust's master; the items come from whoever traded (maybe the dualbox character)
@@ -3373,7 +3577,16 @@ xi.squad.onTrade = function(player, trust, items)
     for _, offer in ipairs(items) do
         local info = GetSquadItemInfo(offer.itemId)
 
-        if squadLearnScroll(owner, function(text) player:printToPlayer(text, xi.msg.channel.SYSTEM_3) end, offer.itemId,
+        if xi.squad.juice and xi.squad.juice.isJuice(offer.itemId) then
+            -- (2026-11-23) juices: this mate keeps them and drinks one when its MP runs low (squad_juice.lua)
+            xi.squad.juice.onTrade(player, owner, trust, offer, function(event, vars)
+                speak(player, who, event, vars)
+            end)
+        elseif food.meals and food.meals.giveFood and food.meals.giveFood(player, owner, offer, food, function(event, vars)
+            speak(player, who, event, vars)
+        end) then
+            -- (2026-11-23, FalconX51) a food: unlocked for the squad's food menu (squad_meals.lua)
+        elseif squadLearnScroll(owner, function(text) player:printToPlayer(text, xi.msg.channel.SYSTEM_3) end, offer.itemId,
             function() return player:delItemAt(offer.itemId, 1, xi.inv.INVENTORY, offer.slot) end) then
             -- (a spell scroll: learned or told why not)
         elseif not info.valid then
@@ -3472,6 +3685,34 @@ local function save(player, mate)
     say(player, 'Saved: ' .. describe(mate, player) .. '  (dismiss and call them again to apply)')
 end
 
+-- (2026-11-23, ChazDingle, Sirloinofbeef; the user: only a GM character) !squad setlevel <slot> <job> <level>: set a mate's
+-- level in one job (its exp starts over at that level). Takes effect the next time the mate is called. (global: the
+-- command function below is at LuaJIT's limit of outside names)
+function squadGmSetLevel(player, squad, slotArg, jobArg, levelArg)
+    if player:getGMLevel() <= 0 then
+        say(player, 'Only a GM character can set a squad mate\'s level (SYSTEM > GM and testing in the launcher).')
+        return
+    end
+
+    local mate = findMate(squad, tonumber(slotArg) or 0)
+    local wanted = string.upper(tostring(jobArg or ''))
+    local job = nil
+    for id, name in pairs(jobNames) do
+        if name == wanted then
+            job = id
+        end
+    end
+
+    local level = math.floor(tonumber(levelArg) or 0)
+    if mate == nil or job == nil or level < 1 or level > MAX_LEVEL then
+        say(player, string.format('!squad setlevel <slot> <job> <1-%d>   e.g. !squad setlevel 2 WHM 30 (GM only)', MAX_LEVEL))
+        return
+    end
+
+    SetSquadJob(mate.id, job, level, 0)
+    say(player, string.format('%s is now a level %d %s. Dismiss and call them again to see it.', mate.name, level, wanted))
+end
+
 commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9)
     local charId = player:getID()
     if action ~= 'panel' and action ~= 'sheet' then
@@ -3533,6 +3774,22 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             xi.squad.shell.command(player, say, arg1, arg2)
         else
             say(player, 'Squad mates on the linkshell are not available (squad_shell.lua did not load).')
+        end
+
+        return
+    end
+
+    if action == 'setlevel' then
+        squadGmSetLevel(player, squad, arg1, arg2, arg3)
+        return
+    end
+
+    -- (2026-11-23) !squad juice: the juices each mate carries (squad_juice.lua)
+    if action == 'juice' or action == 'juices' then
+        if xi.squad.juice then
+            xi.squad.juice.command(player, GetSquad(player:getID()) or {})
+        else
+            say(player, 'Squad juices are not available (squad_juice.lua did not load).')
         end
 
         return
@@ -3656,6 +3913,15 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         return
     end
 
+    -- SQUAD_SEAM v2 begin sr_command
+    if (action == 'profile' or action == 'export' or action == 'version') and type(rawget(_G, 'SQUAD_PROFILE')) == 'table'
+        and type(SQUAD_PROFILE.command) == 'function' then
+        local okSr, handledSr = pcall(SQUAD_PROFILE.command, player, squad, action, arg1, arg2, arg3, arg4, arg5,
+            { say = say, findMate = findMate, jobNames = jobNames, summonedMate = summonedMate,
+              dev = function(a, x, y, z) return SQUAD_DEV_CMD(player, a, x, y, z) end })
+        if okSr and handledSr then return end
+    end
+    -- SQUAD_SEAM v2 end sr_command
     if action == 'panel' then
         -- For the in-game Squad panel addon, which reads these lines and hides them from the chat log:
         --   squadpanel:<slot>|<name>|<main job>|<main level>|<sub job or ->|<sub level>|<role>|<mode>|<1 if the mate is out now>|<switch mask>
@@ -3739,6 +4005,12 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 player:getCharVar('SQUAD_WSTP_' .. mate.id), chosen > 0 and wsName(chosen):gsub(' ', '_') or '-',
                 player:getCharVar('SQUAD_RANGE_' .. mate.id), wsList))
         end
+        -- The addon channel (packets/c2s/0x1f0_addon_channel.h): when this build handles it, say so, so a window may send its commands as that packet
+        -- instead of as chat lines. A build without the packet has no xi.addonChannel and says nothing, so the window keeps typing.
+        if type(xi.addonChannel) == 'table' then
+            say(player, 'squadpanel:chan|' .. tostring(xi.addonChannel.version))
+        end
+
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
         if c then
             say(player, 'squadpanel:campwant|' .. (c.want or '-'))
@@ -3747,6 +4019,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             end
         end
 
+        -- SQUAD_SEAM v2 begin sr_panel
+        if type(rawget(_G, 'SQUAD_PROFILE')) == 'table' and type(SQUAD_PROFILE.panelLines) == 'function' then
+            pcall(SQUAD_PROFILE.panelLines, player, squad, say)
+        end
+        -- SQUAD_SEAM v2 end sr_panel
         say(player, 'squadpanel:end')
         return
     end
@@ -3763,6 +4040,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         --   squadsheet:haste|<gear|magic|ability>|<hundredths of a percent>
         --   squadsheet:eq|<slot index>|<slot name>|<item name>|<item id>
         --   squadsheet:note|<text>
+        --   squadsheet:spell|<name>|<MP>   squadsheet:ability|<name>|<level>   (a called mate's; 2026-11-23)
         --   squadsheet:end
         local mate = arg1 ~= nil and findMate(squad, tonumber(arg1) or 0) or nil
         if mate == nil then
@@ -3860,6 +4138,30 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         for slot, itemId in pairs((squadLockstyleGet(player, mate.id))) do
             local info = GetSquadItemInfo(itemId)
             say(player, string.format('squadsheet:ls|%d|%s|%s|%d', slot, equipSlotNames[slot], clean(info.valid and info.name or itemId), itemId))
+        end
+
+        -- (2026-11-23, Frost) the spells and job abilities a called mate can use now (squad.cpp SquadKnownActions):
+        --   squadsheet:spell|<name>|<MP cost>      squadsheet:ability|<name>|<level>
+        if live ~= nil and SquadKnownActions then
+            local okKnown, known = pcall(SquadKnownActions, live)
+            if okKnown and type(known) == 'table' then
+                for _, sp in ipairs(known.spells or {}) do
+                    say(player, string.format('squadsheet:spell|%s|%d', clean(sp.name), tonumber(sp.mp) or 0))
+                end
+
+                for _, ab in ipairs(known.abilities or {}) do
+                    -- the player rules (main job only, two hour, pets, merits) live in sq_logic.lua
+                    local allowed = true
+                    if type(SQ_LOGIC) == 'table' and type(SQ_LOGIC.mayUse) == 'function' then
+                        local okRule, may = pcall(SQ_LOGIC.mayUse, live, ab.id)
+                        allowed = not okRule or may == true
+                    end
+
+                    if allowed then
+                        say(player, string.format('squadsheet:ability|%s|%d', clean(ab.name), tonumber(ab.level) or 0))
+                    end
+                end
+            end
         end
 
         say(player, 'squadsheet:end')
@@ -4213,20 +4515,43 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
     -- The Squad menu's "Apply now": the mates who are out come back with their new settings (no cooldown)
     if action == 'reapply' then
         local out = {}
+        -- SQUAD_SEAM v1 (reapply gate): Apply now never dismisses, calls or applies a Rule Set to a mate an add-on owns
+        local addonSkipped = {}
         for _, mate in ipairs(orderedSquad(player, squad)) do
             if isSummoned(player, mate.id) then
-                out[#out + 1] = mate
+                local addonOk, addonOwned = false, false
+                if type(rawget(_G, 'ADDON_OWNER')) == 'table' and type(ADDON_OWNER.owns) == 'function' then
+                    addonOk, addonOwned = pcall(ADDON_OWNER.owns, player, summonedMate(player, mate.id))
+                end
+                if addonOk and addonOwned == true then
+                    addonSkipped[#addonSkipped + 1] = mate
+                else
+                    out[#out + 1] = mate
+                end
             end
         end
 
-        player:clearTrusts()
+        if #addonSkipped == 0 then
+            player:clearTrusts()
+        else
+            -- only the mates an add-on does not own leave and come back (one by one); without SquadDismissMate they stay as they are
+            for _, mate in ipairs(addonSkipped) do
+                say(player, string.format('An add-on owns %s: Squads reapply skipped', mate.name))
+            end
+            local addonKept = {}
+            for _, mate in ipairs(out) do
+                local addonTrust = summonedMate(player, mate.id)
+                if addonTrust ~= nil and SquadDismissMate ~= nil and SquadDismissMate(addonTrust) then addonKept[#addonKept + 1] = mate end
+            end
+            out = addonKept
+        end
         for index, mate in ipairs(out) do
             player:timer(RECALL_WAIT_MS + (index - 1) * CALL_GAP_MS, function(entity)
                 callMate(entity, mate)
             end)
         end
 
-        if #out == 0 then
+        if #out == 0 and #addonSkipped == 0 then
             say(player, 'None of your squad mates are out.')
         end
 
@@ -4502,6 +4827,11 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
     if action == 'autoequip' or action == 'auto' then
         local wanted = string.lower(arg1 or '')
+        -- (2026-11-22) with "Squad gets all gear" on the choice is from everything their jobs can wear, and the lines say so
+        local allGear = squadAllGear()
+        local fromWhat = allGear and 'the best gear their jobs and levels can wear ("Squad gets all gear" is on)' or 'the best gear you have given them'
+        local noPool = allGear and type(GetSquadGearPool) ~= 'function'
+            and ' This server build cannot list all gear yet (update or rebuild it), so only the gear you gave was looked at.' or ''
         if wanted == 'on' or wanted == '1' then
             player:setCharVar('SQUAD_AUTOEQUIP', 1)
             local total = 0
@@ -4510,7 +4840,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
                 total = total + ((ok and n) or 0)
             end
 
-            say(player, string.format('Auto-equip is on: your squad wears the best gear you have given them (%d piece(s) changed), and picks again each time they are called. Apply now (or dismiss and call) to see it. !squad autoequip off to choose by hand.', total))
+            say(player, string.format('Auto-equip is on: your squad wears %s (%d piece(s) changed), and picks again each time they are called. Apply now (or dismiss and call) to see it. !squad autoequip off to choose by hand.%s', fromWhat, total, noPool))
         elseif wanted == 'off' or wanted == '0' then
             player:setCharVar('SQUAD_AUTOEQUIP', 0)
             say(player, 'Auto-equip is off: your squad keeps what it wears now, and you choose gear by hand.')
@@ -4530,11 +4860,12 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             if mates == 0 then
                 say(player, string.format('You have no squad mate in slot %s.', tostring(arg2)))
             else
-                say(player, string.format('Best gear put on %s: %d piece(s) changed. Apply now (or dismiss and call) to see it. Auto-equip stays %s.',
-                    only and ('slot ' .. only) or 'every mate', total, player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off, so you can still change any piece by hand'))
+                say(player, string.format('Best gear put on %s%s: %d piece(s) changed. Apply now (or dismiss and call) to see it. Auto-equip stays %s.%s',
+                    only and ('slot ' .. only) or 'every mate', allGear and ', from everything their jobs can wear' or '', total,
+                    player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off, so you can still change any piece by hand', noPool))
             end
         else
-            say(player, '!squad autoequip on | off | now [slot]   - mates wear the best given gear for their job and level (now = once, right away). Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
+            say(player, '!squad autoequip on | off | now [slot]   - mates wear ' .. (allGear and 'the best gear their job and level can wear' or 'the best given gear for their job and level') .. ' (now = once, right away). Now: ' .. (player:getCharVar('SQUAD_AUTOEQUIP') == 1 and 'on' or 'off'))
         end
 
         return
@@ -5476,6 +5807,13 @@ local CATEGORY_NAMES =
         heal    = { 'CURING_WALTZ' },
         cleanse = { 'HEALING_WALTZ' },
         debuff  = { 'QUICKSTEP', 'BOX_STEP', 'VIOLENT_FLOURISH' },
+        -- (2026-11-23, krazy: a Corsair set to Support never rolled) a Phantom Roll is a buff for the party, not a melee
+        -- move: every job ability that was not listed counted as "meleeja", which Support and Healer drop
+        buff    = { 'PHANTOM_ROLL', 'CORSAIRS_ROLL', 'CHAOS_ROLL', 'HUNTERS_ROLL', 'FIGHTERS_ROLL', 'MONKS_ROLL', 'HEALERS_ROLL',
+                    'WIZARDS_ROLL', 'WARLOCKS_ROLL', 'ROGUES_ROLL', 'GALLANTS_ROLL', 'BEAST_ROLL', 'CHORAL_ROLL', 'SAMURAI_ROLL',
+                    'NINJA_ROLL', 'DRACHEN_ROLL', 'EVOKERS_ROLL', 'MAGUSS_ROLL', 'PUPPET_ROLL', 'DANCERS_ROLL', 'SCHOLARS_ROLL',
+                    'BOLTERS_ROLL', 'CASTERS_ROLL', 'COURSERS_ROLL', 'BLITZERS_ROLL', 'TACTICIANS_ROLL', 'ALLIES_ROLL', 'MISERS_ROLL',
+                    'COMPANIONS_ROLL', 'AVENGERS_ROLL', 'NATURALISTS_ROLL', 'RUNEISTS_ROLL' },
     },
 }
 
@@ -5606,7 +5944,8 @@ local function behaviorFilter(role, mode, target, condition, action)
                 return math.max(15, math.min(90, value + shift))
             end)
         end
-    elseif mode == 'conserve' and (category == 'buff' or category == 'debuff' or category == 'nuke' or category == 'cleanse') then
+    elseif mode == 'conserve' and action[1] == ai.r.MA and (category == 'buff' or category == 'debuff' or category == 'nuke' or category == 'cleanse') then
+        -- (a job ability costs no mana: a Phantom Roll is never held back for it)
         condition = withMpFloor(condition, CONSERVE_MP)
     end
 
@@ -5688,6 +6027,13 @@ local function addGambit(mob, target, condition, action, retry)
         mob:setLocalVar('SQUAD_HAS_MB', 1)
     end
 
+    -- SQUAD_SEAM v2 begin sr_gambit
+    if type(rawget(_G, 'SQUAD_PROFILE')) == 'table' and type(SQUAD_PROFILE.filter_rule) == 'function' then
+        local okSr, keepSr, condSr = pcall(SQUAD_PROFILE.filter_rule, mob, target, condition, action)
+        if okSr and keepSr == false then return end
+        if okSr and condSr ~= nil then condition = condSr end
+    end
+    -- SQUAD_SEAM v2 end sr_gambit
     if retry ~= nil then
         mob:addGambit(target, condition, action, retry)
     else
@@ -6455,10 +6801,29 @@ end
 local function squadSpawn(mob)
     local main = jobs[mob:getMainJob()]
     if main == nil then
+        -- SQUAD_SEAM v1 (spawn_norules): a job Squads has no rules for (SCH, DNC, RUN, GEO ...) is still marked owned when an add-on owns the mate
+        local addonMasterNoRules = mob:getMaster()
+        if addonMasterNoRules ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 and (addonMasterNoRules:getCharVar('ADDON_OWN_' .. mob:getLocalVar('SQUAD_ID')) or 0) > 0 then
+            mob:setLocalVar('ADDON_OWNED', 1)
+            return true
+        end
+
         return false
     end
 
+    -- SQUAD_SEAM v1 (spawn): an add-on owns this mate (charvar ADDON_OWN_<slot> > 0 on its master): Squads builds nothing for it
+    local addonMaster = mob:getMaster()
+    if addonMaster ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 and (addonMaster:getCharVar('ADDON_OWN_' .. mob:getLocalVar('SQUAD_ID')) or 0) > 0 then
+        mob:setLocalVar('ADDON_OWNED', 1)
+        return true
+    end
+
     local role, mode = behaviorOf(mob)
+    -- SQUAD_SEAM v2 begin sr_spawn
+    if type(rawget(_G, 'SQUAD_PROFILE')) == 'table' and type(SQUAD_PROFILE.onSpawn) == 'function' then
+        pcall(SQUAD_PROFILE.onSpawn, mob)
+    end
+    -- SQUAD_SEAM v2 end sr_spawn
     local switches = switchesForMob(mob)
     activeBehavior = { role = role, mode = mode }
     activeSwitches = switches
@@ -6595,6 +6960,10 @@ for _, name in ipairs(templates) do
     end)
 
     m:addOverride(base .. '.onMobDeath', function(mob)
+        if mob:getLocalVar('SQUAD_ID') ~= 0 and xi.squad.onMateFell and (tonumber(xi.settings.main.SQUAD_MATES_RAISABLE) or 0) == 1 then
+            pcall(xi.squad.onMateFell, mob) -- (the body waits for a Raise)
+        end
+
         if mob:getLocalVar('SQUAD_ID') == 0 then
             super(mob)
         elseif dialogue.speakOnDeath then
@@ -7119,5 +7488,16 @@ if commandObj ~= nil and commandObj.onTrigger ~= nil then
         end
     end
 end
+
+-- SQUAD_SEAM v2 begin sr_handshake
+-- set once, only after the whole file loaded; the profile layer and the window read it to know the hooks survived
+SQUAD_SEAM = { version = 2, owners = { base = 0, profile = 1, advanced = 2 }, base = 'v1.15' }
+-- the dev handler for the profile layer, reached by a global: the command function is at the engine's limit of 60 upvalues,
+-- so the hook inside it must not name `commandObj` (it would be one more)
+SQUAD_DEV_CMD = function(...) return commandObj.onTrigger(...) end
+-- SQUAD_SEAM v2 end sr_handshake
+
+-- SQUAD_SEAM v1 (handshake): set once, only after the whole file loaded; an add-on reads it to know its hooks survived
+SQUAD_SEAM_V1 = { version = 1 }
 
 return m

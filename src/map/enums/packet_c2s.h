@@ -160,6 +160,10 @@ enum class PacketC2S : uint16_t
     GP_CLI_COMMAND_MASTERY_DISPLAY           = 0x11B,
     GP_CLI_COMMAND_PARTY_REQUEST             = 0x11C,
     GP_CLI_COMMAND_JUMP                      = 0x11D,
+
+    // Not a retail packet (see packets/c2s/0x1f0_addon_channel.h). Its value is above the range magic_enum names, so it is looked up by hand in
+    // rate_limiter.cpp.
+    GP_CLI_COMMAND_ADDON_CHANNEL             = 0x1F0,
 };
 
 template <>

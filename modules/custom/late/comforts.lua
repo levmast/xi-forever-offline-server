@@ -11,10 +11,15 @@
 --     gear does not use), so it does not eat into the -50% that gear can give.
 --   main.GUILD_SHOPS_ALWAYS_OPEN (Dugahst; the user: on by default): guild shops have no closing hours and no weekly
 --     holiday. Off = the era's hours (and the holiday, when main.GUILD_SHOP_HOLIDAYS is on).
+--   main.ANCESTRY_MOOGLES (Yenkei; off by default): the Ancestry Moogles are there (zoneutils.cpp) and change your race,
+--     face, hair and size for free, as often as you like (no 14-day wait, no paid eligibility).
+--   main.TREASURE_WAIT_MULTIPLIER (Rysan, Frost; 1 = the era): scales the 15-60 minute "illusion" wait after a chest or
+--     coffer is opened (main.CHEST_/COFFER_MIN/MAX_ILLUSION_TIME). 0 = every chest and coffer gives its loot.
 -----------------------------------
 require('modules/module_utils')
 require('scripts/globals/caskets')
 require('scripts/globals/guild_shops')
+require('scripts/globals/ancestry_moogle')
 -----------------------------------
 local m = Module:new('comforts')
 
@@ -140,5 +145,36 @@ m:addOverride('xi.guildShops.onTrigger', function(player, npc)
     alwaysOpen()
     return super(player, npc)
 end)
+
+-- Ancestry Moogles --------------------------------------------------------------
+m:addOverride('xi.ancestryMoogle.onTrigger', function(player, npc)
+    if on('ANCESTRY_MOOGLES') then
+        local now = GetSystemTime()
+        player:setCharVar('[RaceChange]Last', 0)                          -- no 14-day wait
+        if player:getCharVar('[RaceChange]Eligible') <= now + 600 then
+            player:setCharVar('[RaceChange]Eligible', now + 3600, now + 3600) -- the service, free (an hour to use it)
+        end
+    end
+
+    return super(player, npc)
+end)
+
+-- Treasure chest and coffer wait ------------------------------------------------
+do
+    local main = xi.settings and xi.settings.main
+    if main then
+        local keys = { 'CHEST_MIN_ILLUSION_TIME', 'CHEST_MAX_ILLUSION_TIME', 'COFFER_MIN_ILLUSION_TIME', 'COFFER_MAX_ILLUSION_TIME' }
+        xi.comfortsTreasureBase = xi.comfortsTreasureBase or {}            -- the values before scaling (a reload scales once)
+        local scale = tonumber(main.TREASURE_WAIT_MULTIPLIER) or 1
+        scale = math.max(0, scale)
+        for _, key in ipairs(keys) do
+            local base = xi.comfortsTreasureBase[key] or tonumber(main[key])
+            if base then
+                xi.comfortsTreasureBase[key] = base
+                main[key] = math.floor(base * scale)
+            end
+        end
+    end
+end
 
 return m

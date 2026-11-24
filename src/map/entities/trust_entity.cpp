@@ -41,6 +41,7 @@
 #include "status_effect_container.h"
 #include "utils/battleutils.h"
 #include "zone.h"
+#include "common/settings.h" // main.SQUAD_MATES_RAISABLE
 
 namespace
 {
@@ -188,8 +189,22 @@ void CTrustEntity::Die()
     luautils::OnMobDeath(this, nullptr);
     PEnmityContainer->Clear();
     PAI->ClearStateStack();
+
+    // XI: Forever Offline (2026-11-23, Meli; the user: "when squad mates die you should be able to raise them"): a squad mate
+    // that falls stays where it fell, in your party, and can be Raised (scripts/actions/spells/white/raise*.lua and arise.lua
+    // call xi.squad.onRaised, squad.lua). squad.lua takes the body away if nobody raises it in time. main.SQUAD_MATES_RAISABLE
+    // = 0: gone at once, as before.
+    const bool keepBody = GetLocalVar("SQUAD_ID") != 0 && settings::get<uint8>("main.SQUAD_MATES_RAISABLE") == 1;
+    if (keepBody)
+    {
+        m_Behavior |= xi::Behavior::Raisable; // (the death state keeps it; the raise spells accept it)
+    }
+
     PAI->Internal_Die(0s);
-    static_cast<CCharEntity*>(PMaster)->RemoveTrust(this);
+    if (!keepBody)
+    {
+        static_cast<CCharEntity*>(PMaster)->RemoveTrust(this);
+    }
     m_OwnerID.clean();
 
     // CMobEntity::Die runs battlefield and spawn slot deaths, exp, drops and the defeat message, and
@@ -202,6 +217,17 @@ void CTrustEntity::Spawn()
 {
     // CMobEntity::Spawn rolls a level, recalculates stats from mob data, moves to the spawn point and
     // starts roaming. A trust's level and stats are set at summon, and it spawns next to its master.
+    // XI: Forever Offline: a squad Blue Mage's set (SQUAD_BLU_*, written when the mate was built) is read by the Squad window and by other add-ons,
+    // and the spawn clears local variables: keep it across the spawn.
+    std::vector<std::pair<std::string, uint32>> keptBlue;
+    for (const auto& [name, value] : GetLocalVars())
+    {
+        if (name.rfind("SQUAD_BLU_", 0) == 0)
+        {
+            keptBlue.emplace_back(name, value);
+        }
+    }
+
     // NOLINTNEXTLINE(bugprone-parent-virtual-call): Grandparent call, skips CMobEntity's impl on purpose.
     CBattleEntity::Spawn();
 
@@ -209,6 +235,10 @@ void CTrustEntity::Spawn()
     if (squadId_ != 0)
     {
         SetLocalVar("SQUAD_ID", squadId_);
+        for (const auto& [name, value] : keptBlue)
+        {
+            SetLocalVar(name, value);
+        }
     }
 
     luautils::OnMobSpawn(this);

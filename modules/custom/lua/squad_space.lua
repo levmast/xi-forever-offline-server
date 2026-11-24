@@ -36,6 +36,31 @@ S.base = S.base or {
     [21] = { 14, 8 },   -- GEO
 }
 
+-- XI: Forever Offline: jobs whose party effect has a short radius stand where it reaches the fighters. { range, lowest range, retail only }
+-- A Corsair rolls 8 yalms around herself (standing 10 from the foe she reached nobody at the foe); a Geomancer's Indi / Geo aura is
+-- 6 yalms plus the hitbox around her (14 from the foe it covered no one in the fight). The Corsair's reach only matters when party
+-- effects obey their radius (map.TRUST_AOE_RANGE retail, the default), the aura always obeyed it. Off: SQUAD_SPACE.reach = false.
+S.reach = S.reach ~= false
+S.reachBase = S.reachBase or {
+    [17] = { 6, 4, true },  -- COR
+    [21] = { 5, 4, false }, -- GEO
+}
+
+local function areaRetail()
+    local ok, v = pcall(function() return xi.settings.map.TRUST_AOE_RANGE end)
+    return not (ok and v == 'extended')
+end
+
+-- the row of this job: the area reach row when it applies, else the usual one
+S.rowFor = function(job)
+    local r = S.reachBase[job]
+    if S.reach and r ~= nil and (not r[3] or areaRetail()) then
+        return r
+    end
+
+    return S.base[job]
+end
+
 local NAMES = { 'WAR', 'MNK', 'WHM', 'BLM', 'RDM', 'THF', 'PLD', 'DRK', 'BST', 'BRD', 'RNG', 'SAM', 'NIN', 'DRG', 'SMN', 'BLU', 'COR', 'PUP', 'DNC', 'SCH', 'GEO', 'RUN' }
 
 local function say(mob, text)
@@ -61,11 +86,11 @@ local function playerChose(mob)
 end
 
 S.tick = function(mob, boss, foe, fighting, now, level, job)
-    if not S.on or S.base[job] == nil then
+    local row = S.rowFor(job)
+    if not S.on or row == nil then
         return
     end
 
-    local row = S.base[job]
     if not fighting or foe == nil then
         if mob:getLocalVar('SQUAD_SP_D') ~= 0 then
             mob:setLocalVar('SQUAD_SP_D', 0)

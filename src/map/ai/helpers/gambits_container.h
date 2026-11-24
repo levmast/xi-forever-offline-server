@@ -26,6 +26,8 @@
 
 #include <common/types/hash_map.h>
 
+#include "gambits_backoff.h"
+
 #include "ai/ai_container.h"
 #include "ai/controllers/trust_controller.h"
 #include "entities/char_entity.h"
@@ -34,6 +36,7 @@
 #include "status_effect.h"
 #include "status_effect_container.h"
 
+#include <optional>
 #include <set>
 #include <utility>
 
@@ -336,8 +339,10 @@ public:
 
 private:
     auto CheckTrigger(const CBattleEntity* triggerTarget, const Gambit_t& gambit, size_t predicateGroupIndex, PredicateGroup_t& predicateGroup) -> bool;
-    auto TryTrustSkill() -> bool;
-    auto TrySettingsTrustSkill(CBattleEntity* target) -> bool; // the OPEN_AT_TP .. AT_TP triggers
+    auto TryTrustSkill(bool dryRun = false) -> bool;                            // (dryRun: XI: Forever Offline, gambits_sata.h)
+    auto TrySettingsTrustSkill(CBattleEntity* target, bool dryRun = false) -> bool; // the OPEN_AT_TP .. AT_TP triggers
+    auto WeaponSkillWouldFire() -> bool;                                        // XI: Forever Offline: squad SA/TA pairing
+    auto CloserOpening(const CBattleEntity* target) const -> std::optional<std::pair<int64, int64>>; // (option B) ms since, duration
     auto PotentialCloserReady(const CBattleEntity* target) const -> bool;
     auto InWeaponSkillRange(const CWeaponSkill* PWeaponSkill, const CBattleEntity* target) const -> bool;
     auto PartyHasHealer() -> bool;
@@ -345,12 +350,35 @@ private:
     auto BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>; // XI: Forever Offline (job expansion): MB_ELEMENT
     auto EstimatedCastTime(CSpell* PSpell) const -> timer::duration;
     auto HoldWeaponSkill(CBattleEntity* target) -> bool; // XI: Forever Offline (job expansion): squad SA/TA before a WS
+    // XI: Forever Offline (2026-11-23, final batch, gambits_sata.h)
+    auto SataOpeningStart(const CBattleEntity* target) const -> std::optional<timer::time_point>; // a tier-0 opening's start
+    auto TryUseSataWhenReady(timer::time_point tick, bool busy) -> bool;                       // I-B
+    auto SataAbilityEndsThisTick(timer::time_point tick) const -> bool;                        // I-C
+    void WithdrawSataAfterWeaponSkill(const CBattleEntity* target);                            // R
 
     CTrustEntity*         POwner;
     timer::time_point     m_lastAction;
     std::vector<Gambit_t> gambits;
 
+    // XI: Forever Offline (2026-11-23, gambits_sata.h): a paired Sneak/Trick Attack was used; until m_sataFollowUpUntil the
+    // weapon skill is tried on every tick
+    bool              m_sataFollowUp{ false };
+    timer::time_point m_sataFollowUpUntil{};
+    // (option B) the opening (its start) for which an open window was already held one pass: never held twice
+    timer::time_point m_sataHeldOpening{};
+    // (final batch) the request the rule's gate made: its ability, the opening (start) it was made for, and whether it was the
+    // first action-taking rule of that pass (no earlier rule acted). I-B completes only such a request, for that opening.
+    uint16            m_sataReqAbility{ 0 };
+    timer::time_point m_sataReqOpening{};
+    bool              m_sataReqClean{ false };
+    // (final batch, I-C) the paired ability that was used and when (taken right after the use: at or after the state's entry)
+    uint16            m_sataUsedAbility{ 0 };
+    timer::time_point m_sataUsedAt{};
+
     HashMap<std::string, timer::time_point> m_timerConditionLastTrigger;
+
+    // XI: Forever Offline: area rules that keep acting on a member they do not reach rest for a while (gambits_backoff.h)
+    backoff::Guard m_AreaGuard;
 
     std::set<xi::Job> melee_jobs = {
         xi::Job::WAR,

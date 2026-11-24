@@ -27,8 +27,34 @@
 #include "entities/char_entity.h"
 #include "enums/packet_c2s.h"
 
+#include <optional>
+
+namespace
+{
+
+// magic_enum only names the packets up to the end of its range (see enums/packet_c2s.h). A packet above it is named here by hand.
+auto packetIdFromName(const std::string& packetName) -> std::optional<PacketC2S>
+{
+    if (const auto fromEnum = magic_enum::enum_cast<PacketC2S>(packetName); fromEnum.has_value())
+    {
+        return fromEnum;
+    }
+
+    if (packetName == "GP_CLI_COMMAND_ADDON_CHANNEL")
+    {
+        return PacketC2S::GP_CLI_COMMAND_ADDON_CHANNEL;
+    }
+
+    return std::nullopt;
+}
+
+} // namespace
+
 PacketRateLimiter::PacketRateLimiter()
 {
+    // The addon channel runs commands the way chat does, so it keeps the chat pace unless PACKET_RATE_LIMITS says otherwise (0 = no limit).
+    rateLimits_[static_cast<uint16>(PacketC2S::GP_CLI_COMMAND_ADDON_CHANNEL)] = std::chrono::milliseconds(200);
+
     const auto limits = lua["xi"]["settings"]["network"]["PACKET_RATE_LIMITS"].get_or_create<sol::table>();
     if (limits.empty())
     {
@@ -45,7 +71,7 @@ PacketRateLimiter::PacketRateLimiter()
         }
 
         const auto packetName    = keyObj.as<std::string>();
-        const auto maybePacketId = magic_enum::enum_cast<PacketC2S>(packetName);
+        const auto maybePacketId = packetIdFromName(packetName);
         if (!maybePacketId.has_value())
         {
             ShowWarningFmt("PACKET_RATE_LIMITS: unknown packet name {}, ignoring entry", packetName);
@@ -61,6 +87,7 @@ PacketRateLimiter::PacketRateLimiter()
 
         if (milliseconds == 0.0)
         {
+            rateLimits_.erase(static_cast<uint16>(*maybePacketId));
             continue;
         }
 

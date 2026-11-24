@@ -24,6 +24,7 @@
 #include "common/logging_context.h"
 
 #include "common/logging.h"
+#include "common/lua.h"
 #include "common/tracy.h"
 
 #include "entities/char_entity.h"
@@ -161,6 +162,7 @@
 #include "packets/c2s/0x11b_mastery_display.h"
 #include "packets/c2s/0x11c_party_request.h"
 #include "packets/c2s/0x11d_jump.h"
+#include "packets/c2s/0x1f0_addon_channel.h"
 #include "packets/c2s/validation.h"
 #include "utils/moduleutils.h"
 
@@ -368,6 +370,7 @@ consteval auto buildPacketHandlers() -> std::array<PacketHandler, 512>
     registerPacket<GP_CLI_COMMAND_MASTERY_DISPLAY>(handlers);
     registerPacket<GP_CLI_COMMAND_PARTY_REQUEST>(handlers);
     registerPacket<GP_CLI_COMMAND_JUMP>(handlers);
+    registerPacket<GP_CLI_COMMAND_ADDON_CHANNEL>(handlers);
 
     return handlers;
 }
@@ -375,6 +378,16 @@ consteval auto buildPacketHandlers() -> std::array<PacketHandler, 512>
 constexpr auto packetHandlers_ = buildPacketHandlers();
 
 } // namespace
+
+PacketSystem::PacketSystem()
+{
+    // Server Lua can ask whether this build handles the addon channel packet (packets/c2s/0x1f0_addon_channel.h):
+    // xi.addonChannel = { packet = 0x1F0, version = 1 }. A build without the packet has no such table.
+    if (auto xi = lua["xi"].get<sol::optional<sol::table>>(); xi.has_value())
+    {
+        (*xi)["addonChannel"] = lua.create_table_with("packet", static_cast<uint16>(PacketC2S::GP_CLI_COMMAND_ADDON_CHANNEL), "version", 1);
+    }
+}
 
 void PacketSystem::dispatch(uint16 packetId, MapSession* PSession, CCharEntity* PChar, CBasicPacket& data)
 {

@@ -321,4 +321,11 @@ xi.settings.map =
     -- The max GM level is 5, so setting this to 6 disables it
     -- for everone. Setting it to 0 enables for everyone.
     REPORT_LUA_ERRORS_TO_PLAYER_LEVEL = 6,
+
+    -- [FFXI Offline] Buff range of trusts, squad mates and pets. 'retail' (default) = a party area effect (Protectra, Curaga, songs,
+    -- COR rolls, Warcry, ...) and RUN Valiance / One for All / Liement reach only the members inside its radius, trusts cast at the
+    -- player's spell range. 'extended' = the stock server: trusts and pets are always covered, trusts cast out to 28.5 yalms.
+    -- Positioning and movement only matter with 'retail'. With 'extended', buffs reach every mate at any distance, so placement,
+    -- Bard song positioning, COR roll stacking, healer and GEO positioning have no effect.
+    TRUST_AOE_RANGE = 'retail',
 }

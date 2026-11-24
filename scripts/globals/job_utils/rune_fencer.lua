@@ -390,6 +390,21 @@ xi.job_utils.rune_fencer.checkHaveRunes = function(player)
     return  xi.msg.basic.REQUIRE_RUNE, 0 -- That action requires the ability Rune Enchantment.
 end
 
+-- XI Forever Offline: party effects reach only the members inside the ability's area around the caster, like the
+-- radius test CTargetFind applies to every other party area effect. radius <= 0 means no limit (data without a radius), and
+-- map.TRUST_AOE_RANGE = 'extended' keeps the stock behavior (every party member, any distance).
+local function memberInAbilityRadius(player, member, radius)
+    if member:getID() == player:getID() then
+        return true
+    end
+
+    if radius <= 0 or xi.settings.map.TRUST_AOE_RANGE == 'extended' then
+        return true
+    end
+
+    return member:getZoneID() == player:getZoneID() and player:checkDistance(member) <= radius
+end
+
 --see https://www.bg-wiki.com/ffxi/Vallation, https://www.bg-wiki.com/ffxi/Valiance, https://www.bg-wiki.com/ffxi/Inspiration
 xi.job_utils.rune_fencer.useVallationValiance = function(player, target, ability, action)
     local abilityID   = ability:getID()
@@ -435,9 +450,11 @@ xi.job_utils.rune_fencer.useVallationValiance = function(player, target, ability
     if abilityID == xi.jobAbility.VALIANCE then -- apply effects to entire party (including target) (Valiance)
         local party    = player:getParty()
         local duration = 180 + jobPointBonusDuration
+        local radius   = ability:getRadius()
 
         for _, member in pairs(party) do
             if
+                memberInAbilityRadius(player, member, radius) and
                 not member:hasStatusEffect(xi.effect.VALLATION) and
                 not target:hasStatusEffect(xi.effect.LIEMENT)
             then
@@ -812,12 +829,15 @@ xi.job_utils.rune_fencer.useOneForAll = function(player, target, ability, action
         return
     end
 
-    local power = player:getMaxHP() * 0.2
-    local party = player:getParty()
+    local power  = player:getMaxHP() * 0.2
+    local party  = player:getParty()
+    local radius = ability:getRadius()
 
     for _, member in pairs(party) do
-        member:delStatusEffectSilent(xi.effect.ONE_FOR_ALL) -- remove old, apparently the newest OFA always wins.
-        member:addStatusEffect(xi.effect.ONE_FOR_ALL, { power = power, duration = duration, origin = player })
+        if memberInAbilityRadius(player, member, radius) then
+            member:delStatusEffectSilent(xi.effect.ONE_FOR_ALL) -- remove old, apparently the newest OFA always wins.
+            member:addStatusEffect(xi.effect.ONE_FOR_ALL, { power = power, duration = duration, origin = player })
+        end
     end
 end
 
@@ -866,10 +886,17 @@ xi.job_utils.rune_fencer.useLiement = function(player, target, ability, action)
     end
 
     if player:getMod(xi.mod.LIEMENT_EXTENDS_TO_AREA) > 0 then -- apply effects to entire party (including target)
-        local party = player:getParty()
+        local party  = player:getParty()
+        local radius = ability:getRadius()
+
+        if radius <= 0 then
+            radius = 10 -- Liement has no area in its data row; the Epeolatry mod makes it an area effect of the usual party size
+        end
 
         for _, member in pairs(party) do
-            applyLiementEffect(member, absorbTypes, absorbPower, duration, player)
+            if memberInAbilityRadius(player, member, radius) then
+                applyLiementEffect(member, absorbTypes, absorbPower, duration, player)
+            end
         end
     else -- apply effects to self only
         applyLiementEffect(target, absorbTypes, absorbPower, duration, player)

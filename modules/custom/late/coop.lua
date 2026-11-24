@@ -10,7 +10,9 @@
 --     owner's AI squad chat (xi.coop.isGuestMate; squad.lua asks);
 --   * lines the launcher writes to modules/custom/lua/coop_in.txt ("<time>|<number>|SAY|<text>") are shown to
 --     everyone within a few seconds ("... is visiting this world", "This world closes in a minute"); a line
---     "<time>|<number>|BOTS|<n>" changes how many bot players are online, like !bots online <n>.
+--     "<time>|<number>|BOTS|<n>" changes how many bot players are online, like !bots online <n>;
+--   * a line "<time>|<number>|KICK|<character id>" logs that visitor out (the host pressed KICK, or a moderator did
+--     in an open world). Only visitors: the owner's own characters are never logged out this way.
 -- Nothing here runs for a world that never has visitors, apart from one small file check every few seconds.
 -- Loaded from custom/late (the last line of modules/init.txt). Lua only: a server restart is enough.
 -----------------------------------
@@ -25,13 +27,14 @@ local IN_FILE = 'modules/custom/lua/coop_in.txt'
 local CHECK_EVERY = 4       -- seconds between looks at the launcher's file
 local FRESH = 90            -- a line older than this many seconds was for an earlier session
 
-local config = { hosting = false, world = 'this world' }
+local config = { hosting = false, open = false, world = 'this world' }
 do
     local chunk = loadfile('modules/custom/lua/coop_config.lua')      -- written by the launcher at every PLAY
     if chunk then
         local ok, value = pcall(chunk)
         if ok and type(value) == 'table' then
             config.hosting = value.hosting == true
+            config.open = value.open == true       -- an open world: anyone with its link may visit, not only friends
             if type(value.world) == 'string' and value.world ~= '' then
                 config.world = value.world
             end
@@ -143,7 +146,8 @@ xi.coop.blockGuest = function(player, command, action)
         return false
     end
 
-    tell(player, refusal[command] or 'Visitors cannot use that command in a friend\'s world.')
+    local where = config.open and 'this world' or 'a friend\'s world'
+    tell(player, refusal[command] or ('Visitors cannot use that command in ' .. where .. '.'))
     return true
 end
 
@@ -154,6 +158,32 @@ local seen = {}
 local seenCount = 0
 local nextLook = 0
 local watching = {}          -- [character id] = the number of that character's current watch loop
+local kicks = {}             -- [character id] = the time until which that visitor is to be logged out
+
+-- Logs out the visitors the launcher asked for. A character that is between two areas is not found, so its request
+-- waits here and is tried again at every look, until the line that asked is too old. Once done it is forgotten: a
+-- visitor who comes straight back is not logged out again (closing its account is the launcher's BAN).
+local function sendOut()
+    local now = os.time()
+    for id, untilTime in pairs(kicks) do
+        if now > untilTime then
+            kicks[id] = nil
+        else
+            local target = GetPlayerByID(id)
+            if target ~= nil then
+                kicks[id] = nil
+                if xi.coop.isGuest(target) then
+                    local name = target:getName()
+                    tell(target, 'The host of this world has logged you out.')
+                    target:leaveGame()
+                    print(string.format('[coop] %s (%d) was logged out by the host', tostring(name), id))
+                else
+                    print(string.format('[coop] character %d is not a visitor: left alone', id))
+                end
+            end
+        end
+    end
+end
 
 local function readLines(player)
     local handle = io.open(IN_FILE, 'r')
@@ -184,6 +214,8 @@ local function readLines(player)
                 if xi.bots and xi.bots.setOnline and xi.bots.setOnline(body) then
                     print('[coop] bots online at a time: ' .. tostring(body))
                 end
+            elseif kind == 'KICK' and string.match(body, '^%d+$') and #body <= 10 and now - tonumber(stamp) <= FRESH then
+                kicks[tonumber(body)] = tonumber(stamp) + FRESH
             end
         end
     end
@@ -208,6 +240,13 @@ local function watch(player, number)
             local ok, err = pcall(readLines, playerArg)
             if not ok then
                 print('[coop] could not read ' .. IN_FILE .. ': ' .. tostring(err))
+            end
+
+            if next(kicks) ~= nil then
+                ok, err = pcall(sendOut)
+                if not ok then
+                    print('[coop] could not log a visitor out: ' .. tostring(err))
+                end
             end
         end
 
@@ -239,6 +278,7 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     return result
 end)
 
-print(string.format('[coop] ready (%s)', config.hosting and ('hosting ' .. config.world) or 'not hosting'))
+local state = config.hosting and ((config.open and 'open world ' or 'hosting ') .. config.world) or 'not hosting'
+print(string.format('[coop] ready (%s)', state))
 
 return m

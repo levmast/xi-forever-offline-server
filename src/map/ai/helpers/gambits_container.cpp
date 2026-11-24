@@ -21,9 +21,12 @@
 
 #include "gambits_container.h"
 #include "gambits_reach.h"
+#include "gambits_sata.h"
 
 #include "ability.h"
+#include "common/settings.h"
 #include "ai/states/ability_state.h"
+#include "ai/states/inactive_state.h"
 #include "ai/states/magic_state.h"
 #include "ai/states/mobskill_state.h"
 #include "ai/states/petskill_state.h"
@@ -134,15 +137,28 @@ auto nowSeconds() -> uint32
     return static_cast<uint32>(std::time(nullptr)); // (the epoch Lua's os.time() uses: squad.lua reads and writes these)
 }
 
-// XI: Forever Offline (Squad healer range, see gambits_reach.h): the spell a rule made only of spells will cast, when it
-// is known before a target is chosen (a specific spell, or the best of a family), as the reach it gives the rule.
-// Anything else - a job ability, a ranged attack, a spell picked against the target - gives no reach (the inherited 15).
-auto RuleSpellReach(CTrustEntity* POwner, const Gambit_t& gambit) -> std::optional<reach::SpellReach>
+// XI: Forever Offline: map.TRUST_AOE_RANGE (settings/default/map.lua). 'retail' (the default) = a party area effect reaches
+// only the members inside its radius, so the party rules below pick only members it can reach. 'extended' = the stock server
+// (trusts and pets are always covered), where every rule keeps the reach it had before.
+auto TrustAoeRetail() -> bool
 {
-    const Action_t* first = nullptr;
+    return settings::get<std::string>("map.TRUST_AOE_RANGE") != "extended";
+}
+
+// XI: Forever Offline (Squad healer range, see gambits_reach.h): the spell or ability a rule will use, when it is known
+// before a target is chosen (a specific spell, or the best of a family), as the reach it gives the rule. A rule made only of
+// spells, or only of job abilities, counts; a spell picked against the target, a ranged attack or a mix gives no reach (the
+// inherited 15). Songs and job abilities with an area only count when the area reach is retail (areaRetail).
+auto RuleSpellReach(CTrustEntity* POwner, const Gambit_t& gambit, const bool areaRetail) -> std::optional<reach::SpellReach>
+{
+    const Action_t* first       = nullptr;
+    bool            allSpells   = true;
+    bool            allAbility  = true;
     for (const auto& action : gambit.actions)
     {
-        if (action.reaction != G_REACTION::MA)
+        allSpells  = allSpells && action.reaction == G_REACTION::MA;
+        allAbility = allAbility && action.reaction == G_REACTION::JA;
+        if (!allSpells && !allAbility)
         {
             return std::nullopt;
         }
@@ -153,7 +169,24 @@ auto RuleSpellReach(CTrustEntity* POwner, const Gambit_t& gambit) -> std::option
         }
     }
 
-    if (first == nullptr || POwner->SpellContainer == nullptr)
+    if (first == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    if (allAbility)
+    {
+        // A job ability used on oneself with an area (the Corsair rolls, Warcry ...): its radius is its reach
+        if (!areaRetail || first->select != G_SELECT::SPECIFIC)
+        {
+            return std::nullopt;
+        }
+
+        const auto* PAbility = ability::GetAbility(first->select_arg);
+        return PAbility != nullptr ? reach::FromAbilityData(PAbility->getValidTarget(), static_cast<float>(PAbility->getRadius())) : std::nullopt;
+    }
+
+    if (POwner->SpellContainer == nullptr)
     {
         return std::nullopt;
     }
@@ -174,10 +207,17 @@ auto RuleSpellReach(CTrustEntity* POwner, const Gambit_t& gambit) -> std::option
         return std::nullopt;
     }
 
+    // (a song fell back to the inherited 15 yalms in the stock server: it keeps that when the area reach is extended)
+    if (!areaRetail && PSpell->getSpellGroup() == SPELLGROUP_SONG)
+    {
+        return std::nullopt;
+    }
+
     return reach::FromSpellData(PSpell->getValidTarget(), PSpell->getRange(), PSpell->getRadius());
 }
 
-static_assert(reach::TargetSelf == TARGET_SELF && reach::TargetPlayerParty == TARGET_PLAYER_PARTY);
+static_assert(reach::TargetSelf == TARGET_SELF && reach::TargetPlayerParty == TARGET_PLAYER_PARTY && reach::TargetEnemy == TARGET_ENEMY &&
+              reach::TargetPlayerPartyPianissimo == TARGET_PLAYER_PARTY_PIANISSIMO);
 
 } // namespace
 
@@ -254,6 +294,12 @@ void CGambitsContainer::RemoveAllGambits()
 {
     gambits.clear();
     m_timerConditionLastTrigger.clear();
+    m_AreaGuard.Clear();
+    m_sataFollowUp    = false; // (XI: Forever Offline: a new set of rules starts without a pending weapon skill)
+    m_sataHeldOpening = {};
+    m_sataReqAbility  = 0; // (final batch: no request of the old rules is completed by the new ones)
+    m_sataReqClean    = false;
+    m_sataUsedAbility = 0;
 }
 
 auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
@@ -264,6 +310,60 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
     uint8 currentPartyPos = controller->GetPartyPosition();
     auto  position_offset = static_cast<std::chrono::milliseconds>(currentPartyPos * 100);
 
+    const bool busy = POwner->PAI->IsCurrentState<CAbilityState>() || POwner->PAI->IsCurrentState<CRangeState>() ||
+                      POwner->PAI->IsCurrentState<CMagicState>() || POwner->PAI->IsCurrentState<CWeaponSkillState>() ||
+                      POwner->PAI->IsCurrentState<CMobSkillState>() || POwner->PAI->IsCurrentState<CPetSkillState>();
+
+    // XI: Forever Offline (squad SA/TA before a weapon skill, gambits_sata.h): right after a paired Sneak/Trick Attack the
+    // weapon skill is tried on every tick until it goes or the window closes, not on the rules' 2-3 s cadence. Only the
+    // weapon skill: the rules keep their cadence. Armed only for squad mates whose Rule Set pairs the two.
+    if (m_sataFollowUp)
+    {
+        const bool hasEffect = POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SneakAttack, xi::StatusEffect::TrickAttack });
+        // (stunned, asleep ...: the weapon skill would be refused, and the engine-trigger path reports a refused weapon
+        //  skill as used - so wait, within the window, instead of trying)
+        // (2026-11-23, final batch I-C) except on the paired ability's last tick: its animation is over and the state would end
+        // in this tick's state update, which resumes the attack state and lets it swing in the same tick - using the effect
+        // before the weapon skill (DEV log). A completed ability state may be replaced (CAbilityState::CanChangeState), so the
+        // weapon skill starts now, through the usual path; if it cannot (window, range), nothing changes.
+        const bool locked = (busy && !SataAbilityEndsThisTick(tick)) || POwner->PAI->IsCurrentState<CInactiveState>();
+        switch (sata::NextFollowUp(true, tick > m_sataFollowUpUntil, locked, hasEffect, static_cast<uint16>(POwner->health.tp)))
+        {
+            case sata::FollowUp::TryWeaponSkill:
+                if (TryTrustSkill())
+                {
+                    WithdrawSataAfterWeaponSkill(POwner->GetBattleTarget()); // (R: only if the effect is not on)
+                    m_sataFollowUp = false;
+                    m_lastAction   = tick + static_cast<std::chrono::milliseconds>(xirand::GetRandomNumber(2000, 3000));
+                    co_return;
+                }
+                break; // (not yet: range, target ...; the usual cadence below may still act this tick)
+            case sata::FollowUp::Expire:
+                m_sataFollowUp = false;
+                // (2026-11-23, final batch I-C fallback) the effect is not there (paralyzed, or a hit used it): the closing
+                // weapon skill is tried now, not on the next rules pass, so a late use that fails still closes in time
+                // (closer openings only: At TP and other paired uses keep the rules pass, as before)
+                if (sata::CloseAfterLostEffect(tick > m_sataFollowUpUntil, locked, hasEffect, static_cast<uint16>(POwner->health.tp)) &&
+                    CloserOpening(POwner->GetBattleTarget()).has_value() && TryTrustSkill())
+                {
+                    WithdrawSataAfterWeaponSkill(POwner->GetBattleTarget());
+                    m_lastAction = tick + static_cast<std::chrono::milliseconds>(xirand::GetRandomNumber(2000, 3000));
+                    co_return;
+                }
+                break;
+            case sata::FollowUp::Wait:
+            case sata::FollowUp::None:
+                break;
+        }
+    }
+
+    // (2026-11-23, final batch I-B) the rule's own request for this opening is completed on the tick the thief is in position,
+    // not on the next 2-3 s rules pass (TryUseSataWhenReady checks everything again; a no-op for everyone else)
+    if (TryUseSataWhenReady(tick, busy))
+    {
+        co_return;
+    }
+
     if ((tick + position_offset) < m_lastAction)
     {
         co_return;
@@ -271,9 +371,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
     // TODO: Is this necessary?
     // Not already doing something
-    if (POwner->PAI->IsCurrentState<CAbilityState>() || POwner->PAI->IsCurrentState<CRangeState>() || POwner->PAI->IsCurrentState<CMagicState>() ||
-        POwner->PAI->IsCurrentState<CWeaponSkillState>() || POwner->PAI->IsCurrentState<CMobSkillState>() ||
-        POwner->PAI->IsCurrentState<CPetSkillState>())
+    if (busy)
     {
         co_return;
     }
@@ -283,13 +381,22 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
     // Deal with TP skills before any gambits
     // TODO: Should this be its own special gambit?
-    if (POwner->health.tp >= 1000 && TryTrustSkill())
+    // XI: Forever Offline: a script can hold the stock weapon skills (trust_hold.h); the gambits below still run
+    if (POwner->health.tp >= 1000 && !controller->ScriptHolds(trust_hold::HoldWeaponSkill) && TryTrustSkill())
     {
+        WithdrawSataAfterWeaponSkill(POwner->GetBattleTarget()); // (2026-11-23, final batch R)
         co_return;
     }
 
     // XI: Forever Offline (Squad healer range): squad mates' spell rules reach party members as far as the spell does
     const bool squadMate = POwner->GetLocalVar("SQUAD_ID") != 0;
+
+    // XI: Forever Offline: the area reach of party effects (map.TRUST_AOE_RANGE) and the clock the rest of a rule counts in
+    const bool    areaRetail = TrustAoeRetail();
+    const int64_t nowMs      = std::chrono::duration_cast<std::chrono::milliseconds>(tick.time_since_epoch()).count();
+    // (2026-11-23, final batch I-B) whether a rule before the current one acted on this pass: a Sneak/Trick Attack request made
+    // after another rule's action is not completed between passes (that rule had priority on this pass)
+    bool passActed = false;
 
     // Didn't WS/MS, go for other Gambits
     for (auto& gambit : gambits)
@@ -299,17 +406,33 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             continue;
         }
 
-        const auto ruleSpell = squadMate ? RuleSpellReach(POwner, gambit) : std::nullopt;
+        // (other trusts only need the reach under the retail area range; squad mates always had it)
+        const auto ruleSpell = (squadMate || areaRetail) ? RuleSpellReach(POwner, gambit, areaRetail) : std::nullopt;
 
-        auto isValidMember = [this, squadMate, &ruleSpell](CBattleEntity* PSettableTarget, CBattleEntity* PPartyTarget)
+        // XI: Forever Offline: a rule that spreads an area effect from its caster (Protectra, a song, a roll) and keeps acting on
+        // a member the area does not reach rests for that member (gambits_backoff.h). Only under the retail area range:
+        // the stock server's trusts are always covered, so such a rule always converges there.
+        const bool areaRule = areaRetail && ruleSpell.has_value() && ruleSpell->selfOnly && ruleSpell->radius > 0.0f;
+
+        auto isValidMember = [this, squadMate, areaRule, nowMs, &ruleSpell, &gambit](CBattleEntity* PSettableTarget, CBattleEntity* PPartyTarget)
         {
             if (PSettableTarget || !PPartyTarget->isAlive() || POwner->loc.zone != PPartyTarget->loc.zone)
             {
                 return false;
             }
 
+            if (areaRule && m_AreaGuard.Blocked(gambit.identifier, PPartyTarget->id, nowMs))
+            {
+                return false;
+            }
+
             if (!squadMate)
             {
+                if (ruleSpell.has_value())
+                {
+                    return reach::WithinReach(POwner->loc.p, PPartyTarget->loc.p, reach::TrustPartyReach(ruleSpell)); // (an area effect on oneself: its radius)
+                }
+
                 return distance(POwner->loc.p, PPartyTarget->loc.p) <= 15.0f; // (other trusts: unchanged)
             }
 
@@ -989,6 +1112,45 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                     // (squadThiefTick -> SQUAD_FLANK) and says when the position is right (SQUAD_SATA_READY = the ability).
                     // Until then the ability is only requested, not used (not executed: no retry timer).
                     const auto abilityId = PAbility->getID();
+                    // (2026-11-23, gambits_sata.h) paired with the weapon skill (the rule needs TP): neither asked for nor
+                    // used while that weapon skill could not go now - a closer waiting for a window, an opener waiting
+                    // for a partner, a higher TP threshold, out of range. A request already made is withdrawn (no back-off),
+                    // so the thief stops moving for it and the weapon skill hold ends as before.
+                    // Below 1000 TP no weapon skill is possible at all, so a rule that asks for less TP (TP >= 500) keeps
+                    // using its ability on its own there, as before.
+                    const bool paired = (abilityId == ABILITY_SNEAK_ATTACK || abilityId == ABILITY_TRICK_ATTACK) && POwner->health.tp >= 1000 &&
+                                        POwner->GetLocalVar("SQUAD_SATA_WSHOLD") != 0 && POwner->GetLocalVar("SQUAD_SATA_MANAGED") != 0;
+                    // (option B) a closer facing an opening it closes: asked for from the moment the opening lands, used only
+                    // when it ends about as the window opens or later and the close still lands with the safety margin;
+                    // otherwise the close goes without it. Without such an opening: due-now, as above.
+                    bool allowed = false;
+                    std::optional<timer::time_point> closerOpeningStart; // (final batch I-B) the opening this request is for
+                    if (paired)
+                    {
+                        const auto opening = CloserOpening(POwner->GetBattleTarget());
+                        if (opening.has_value())
+                        {
+                            const auto step = sata::CloserSaStep(opening->first, opening->second, timer::count_milliseconds(PAbility->getAnimationTime()));
+                            allowed = POwner->GetLocalVar("SQUAD_SATA_READY") == abilityId ? step == sata::CloseSa::Use : step != sata::CloseSa::TooLate;
+                            closerOpeningStart = SataOpeningStart(POwner->GetBattleTarget());
+                        }
+                        else
+                        {
+                            allowed = WeaponSkillWouldFire();
+                        }
+                    }
+
+                    if (paired && !sata::MayPrepare(true, allowed))
+                    {
+                        if (POwner->GetLocalVar("SQUAD_SATA_REQ") == abilityId)
+                        {
+                            POwner->SetLocalVar("SQUAD_SATA_REQ", 0);
+                            POwner->SetLocalVar("SQUAD_SATA_TGT", 0);
+                        }
+                        m_sataReqAbility = 0; // (final batch: nothing left for I-B to complete)
+                        continue;
+                    }
+
                     if ((abilityId == ABILITY_SNEAK_ATTACK || abilityId == ABILITY_TRICK_ATTACK) && POwner->GetLocalVar("SQUAD_SATA_MANAGED") != 0 &&
                         POwner->GetLocalVar("SQUAD_SATA_READY") != abilityId)
                     {
@@ -1004,12 +1166,29 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                             POwner->SetLocalVar("SQUAD_SATA_REQ", abilityId);
                             POwner->SetLocalVar("SQUAD_SATA_REQ_AT", nowSeconds());
                         }
+
+                        // (2026-11-23, final batch I-B) this pass's rule authorizes the request for this closer opening; it may be
+                        // completed on the tick the thief is in position (TryUseSataWhenReady) - only for this opening, and only
+                        // when no earlier rule acted on this pass (that rule had priority). Any other request: rules passes only.
+                        m_sataReqAbility = closerOpeningStart.has_value() ? abilityId : 0;
+                        m_sataReqOpening = closerOpeningStart.value_or(timer::time_point{});
+                        m_sataReqClean   = !passActed;
                         continue;
                     }
 
                     if (target != nullptr)
                     {
-                        executedAnyAction = controller->Ability(target->entityId(), PAbility->getID()) || executedAnyAction;
+                        const bool used   = controller->Ability(target->entityId(), PAbility->getID());
+                        executedAnyAction = used || executedAnyAction;
+                        if (used && paired)
+                        {
+                            // (gambits_sata.h) the weapon skill follows on the first tick the mate is free again
+                            m_sataFollowUp      = true;
+                            m_sataFollowUpUntil = tick + std::chrono::milliseconds(sata::FollowUpWindowMs);
+                            m_sataUsedAbility   = abilityId; // (final batch I-C: its last tick; taken after the state was entered)
+                            m_sataUsedAt        = timer::now();
+                            m_sataReqAbility    = 0;
+                        }
                     }
                 }
 
@@ -1185,11 +1364,18 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
             }
         }
 
+        // XI: Forever Offline: count what an area rule did to this member (see areaRule above)
+        if (executedAnyAction && areaRule && target != nullptr)
+        {
+            m_AreaGuard.Record(gambit.identifier, target->id, nowMs);
+        }
+
         // If we executed any action and the gambit has a retry_delay, set last_used
         if (executedAnyAction && gambit.retry_delay != 0)
         {
             gambit.last_used = tick;
         }
+        passActed = passActed || executedAnyAction;
     }
 }
 
@@ -1729,7 +1915,10 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
     }
 }
 
-auto CGambitsContainer::TryTrustSkill() -> bool
+// XI: Forever Offline (2026-11-23, gambits_sata.h): dryRun = only answer whether a weapon skill (or mob skill) would go
+// now - the same triggers, choice and range - without using it, without the Sneak/Trick Attack hold and without a random
+// roll (RANDOM counts as "may go" once its TP is reached). The two engine-specific choices (Ayame, August) answer yes.
+auto CGambitsContainer::TryTrustSkill(const bool dryRun) -> bool
 {
     TracyZoneScoped;
 
@@ -1740,15 +1929,23 @@ auto CGambitsContainer::TryTrustSkill() -> bool
         return false;
     }
 
-    // XI: Forever Offline (job expansion): a squad thief preparing Sneak Attack / Trick Attack keeps its TP for a moment
-    if (HoldWeaponSkill(target))
+    if (!dryRun)
     {
-        return false;
+        // XI: Forever Offline (job expansion): a squad thief preparing Sneak Attack / Trick Attack keeps its TP for a moment
+        if (HoldWeaponSkill(target))
+        {
+            return false;
+        }
     }
 
     // XI: Forever Offline: the Gambits weapon skill settings have their own path; the triggers above keep theirs unchanged
     if (tp_trigger >= G_TP_TRIGGER::OPEN_AT_TP && tp_trigger <= G_TP_TRIGGER::AT_TP)
     {
+        if (dryRun)
+        {
+            return TrySettingsTrustSkill(target, true);
+        }
+
         return TrySettingsTrustSkill(target);
     }
 
@@ -1773,7 +1970,7 @@ auto CGambitsContainer::TryTrustSkill() -> bool
                 {
                     tp_value = 1000; // Apply the minimum TP Hold Threshold
                 }
-                if (POwner->health.tp >= tp_value && xirand::GetRandomNumber<uint16>(10000) < tp_value)
+                if (POwner->health.tp >= tp_value && (dryRun || xirand::GetRandomNumber<uint16>(10000) < tp_value))
                 {
                     result = true;
                 }
@@ -1833,6 +2030,11 @@ auto CGambitsContainer::TryTrustSkill() -> bool
     xi::SkillchainType  chosen_skillchain = xi::SkillchainType::None;
     if (checkTPTrigger() && !tp_skills.empty())
     {
+        if (dryRun && (tp_select == G_SELECT::SPECIAL_AYAME || tp_select == G_SELECT::SPECIAL_AUGUST))
+        {
+            return true; // (named trusts only; August's choice also writes a local var)
+        }
+
         switch (tp_select)
         {
             case G_SELECT::RANDOM:
@@ -2039,10 +2241,21 @@ auto CGambitsContainer::TryTrustSkill() -> bool
                     return false;
                 }
             }
+
+            if (dryRun)
+            {
+                return true;
+            }
+
             controller->WeaponSkill(target->entityId(), PWeaponSkill->getID());
         }
         else // Mobskill
         {
+            if (dryRun)
+            {
+                return true;
+            }
+
             if (chosen_skill->valid_targets & TARGET_SELF || chosen_skill->valid_targets & TARGET_PLAYER_PARTY)
             {
                 target = POwner;
@@ -2124,7 +2337,7 @@ auto CGambitsContainer::PotentialCloserReady(const CBattleEntity* target) const 
 // Selection is the engine's HIGHEST: the closer that forms the best skillchain when the target has a skillchain effect,
 // otherwise the last weapon skill of the list (the opening pick). tp_skills is already only the chosen weapon skill when
 // the player chose one that the mate can use (squad.cpp limitWeaponSkills).
-auto CGambitsContainer::TrySettingsTrustSkill(CBattleEntity* target) -> bool
+auto CGambitsContainer::TrySettingsTrustSkill(CBattleEntity* target, const bool dryRun) -> bool
 {
     if (tp_skills.empty())
     {
@@ -2222,8 +2435,62 @@ auto CGambitsContainer::TrySettingsTrustSkill(CBattleEntity* target) -> bool
         return false; // too far: keep the TP and try again next tick (also at 3000 TP)
     }
 
+    if (dryRun)
+    {
+        return true;
+    }
+
     auto* controller = static_cast<CTrustController*>(POwner->PAI->GetController());
     return controller->WeaponSkill(wsTarget->entityId(), PWeaponSkill->getID());
+}
+
+// XI: Forever Offline (2026-11-23, gambits_sata.h): would the weapon skill go now if it were not held for Sneak/Trick
+// Attack? The real path in dry-run mode, so the two can never disagree. Needs 1000 TP, as Tick asks before it tries.
+auto CGambitsContainer::WeaponSkillWouldFire() -> bool
+{
+    return POwner->health.tp >= 1000 && TryTrustSkill(true);
+}
+
+// XI: Forever Offline (2026-11-23, option B, gambits_sata.h): an opening on the target that this mate is set to close -
+// its weapon skill settings close (Close, Open + Close, the engine's CLOSER / CLOSER_UNTIL_TP) and one of its weapon skills
+// forms a skillchain with the opening, the test the real closing choice makes. Returns the milliseconds since the opening
+// landed and the opening's duration, or nothing. Any opener counts (a member, a player, a trust).
+auto CGambitsContainer::CloserOpening(const CBattleEntity* target) const -> std::optional<std::pair<int64, int64>>
+{
+    if (target == nullptr || tp_skills.empty())
+    {
+        return std::nullopt;
+    }
+
+    if (tp_trigger != G_TP_TRIGGER::CLOSE_ONLY && tp_trigger != G_TP_TRIGGER::OPEN_CLOSE_AT_TP && tp_trigger != G_TP_TRIGGER::CLOSER &&
+        tp_trigger != G_TP_TRIGGER::CLOSER_UNTIL_TP)
+    {
+        return std::nullopt;
+    }
+
+    auto* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
+    if (PSCEffect == nullptr || PSCEffect->GetTier() != 0)
+    {
+        return std::nullopt;
+    }
+
+    const std::list<xi::SkillchainType> resonance = resonanceOf(PSCEffect);
+    const bool closes = std::ranges::any_of(tp_skills, [&](const TrustSkill_t& skill)
+                                            {
+                                                const std::list<xi::SkillchainType> properties = { static_cast<xi::SkillchainType>(skill.primary),
+                                                                                                   static_cast<xi::SkillchainType>(skill.secondary),
+                                                                                                   static_cast<xi::SkillchainType>(skill.tertiary) };
+                                                return skill.skill_type == G_REACTION::WS &&
+                                                       battleutils::FormSkillchain(resonance, properties) != xi::SkillchainType::None;
+                                            });
+    if (!closes)
+    {
+        return std::nullopt;
+    }
+
+    const auto since    = std::chrono::duration_cast<std::chrono::milliseconds>(timer::now() - PSCEffect->GetStartTime()).count();
+    const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(PSCEffect->GetDuration()).count();
+    return std::make_pair(static_cast<int64>(since), static_cast<int64>(duration));
 }
 
 // currently only used for Uka Totlihn to determin what samba to use.
@@ -2427,7 +2694,20 @@ auto CGambitsContainer::HoldWeaponSkill(CBattleEntity* target) -> bool
     auto* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
     if (PSCEffect != nullptr && PSCEffect->GetTier() == 0 && PSCEffect->GetStartTime() + 3s < timer::now())
     {
-        return false; // a window to close: the weapon skill (if it closes) is worth more than the position
+        // a window to close: the weapon skill (if it closes) is worth more than the position. (2026-11-23, option B) One
+        // exception: the thief already stands in position for its ability (READY) and the close still lands with the safety
+        // margin even a whole rules pass later - then this one pass waits so the ability goes first. Once per opening.
+        const uint32 readyAbility = POwner->GetLocalVar("SQUAD_SATA_READY");
+        auto*        PReady       = readyAbility != 0 ? ability::GetAbility(static_cast<uint16>(readyAbility)) : nullptr;
+        const auto   opening      = CloserOpening(target);
+        if (PReady != nullptr && opening.has_value() && m_sataHeldOpening != PSCEffect->GetStartTime() &&
+            sata::MayHoldOpenWindow(opening->first, opening->second, timer::count_milliseconds(PReady->getAnimationTime())))
+        {
+            m_sataHeldOpening = PSCEffect->GetStartTime();
+            return true;
+        }
+
+        return false;
     }
 
     const uint32 now   = nowSeconds();
@@ -2444,13 +2724,132 @@ auto CGambitsContainer::HoldWeaponSkill(CBattleEntity* target) -> bool
                !POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(id), 0s);
     };
 
-    if (ready(ABILITY_SNEAK_ATTACK) || ready(ABILITY_TRICK_ATTACK))
+    // (2026-11-23) only when the weapon skill would really go now: a closer still waiting for its window or its TP, or an
+    // opener waiting for a partner, does not use up the hold (or ask for Sneak/Trick Attack) before its weapon skill is due
+    if ((ready(ABILITY_SNEAK_ATTACK) || ready(ABILITY_TRICK_ATTACK)) && WeaponSkillWouldFire())
     {
         POwner->SetLocalVar("SQUAD_WS_HOLD_UNTIL", now + 8);
         return true;
     }
 
     return false;
+}
+
+// XI: Forever Offline (2026-11-23, final batch): the start of the opening (tier-0 skillchain effect) on the target, if any
+auto CGambitsContainer::SataOpeningStart(const CBattleEntity* target) const -> std::optional<timer::time_point>
+{
+    if (target == nullptr)
+    {
+        return std::nullopt;
+    }
+
+    auto* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain);
+    if (PSCEffect == nullptr || PSCEffect->GetTier() != 0)
+    {
+        return std::nullopt;
+    }
+
+    return PSCEffect->GetStartTime();
+}
+
+// XI: Forever Offline (2026-11-23, final batch I-B, gambits_sata.h UseWhenReady): completes the Sneak/Trick Attack the rule
+// requested for the opening now on the target, on the tick the squad reports the thief in position. Not a new rule: only the
+// request the rule's gate made on a pass for this same opening (where no earlier rule acted), with every condition of the use
+// checked again. Uses the ability the way the rule does and arms the same follow-up. Returns true when it was used.
+auto CGambitsContainer::TryUseSataWhenReady(const timer::time_point tick, const bool busy) -> bool
+{
+    if (m_sataReqAbility == 0 || m_sataFollowUp)
+    {
+        return false; // (nothing requested by a closer rule: every other mate, trust and player stops here)
+    }
+
+    const uint32 pending = POwner->GetLocalVar("SQUAD_SATA_REQ");
+    if (pending != m_sataReqAbility)
+    {
+        if (pending == 0)
+        {
+            m_sataReqAbility = 0; // (the squad cancelled it, or it was used: nothing left to complete)
+        }
+        return false;
+    }
+
+    auto*      target   = POwner->GetBattleTarget();
+    const auto start    = SataOpeningStart(target);
+    const auto opening  = CloserOpening(target);
+    const auto ability  = static_cast<uint16>(pending);
+    auto*      PAbility = ability::GetAbility(ability);
+    if (PAbility == nullptr || !opening.has_value() || !start.has_value())
+    {
+        return false; // (the opening is gone: the request is not used for anything else)
+    }
+
+    const bool authorized = *start == m_sataReqOpening && m_sataReqClean;
+    const bool eligible   = (ability == ABILITY_SNEAK_ATTACK || ability == ABILITY_TRICK_ATTACK) && POwner->GetLocalVar("SQUAD_SATA_MANAGED") != 0 &&
+                          POwner->GetLocalVar("SQUAD_SATA_WSHOLD") != 0 && POwner->health.tp >= 1000 && target->isAlive() &&
+                          POwner->GetLocalVar("SQUAD_SATA_TGT") == target->id && ability::CanLearnAbility(POwner, static_cast<ABILITY>(ability));
+    const bool effectOn = POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SneakAttack, xi::StatusEffect::TrickAttack });
+    const bool onRecast = POwner->PRecastContainer->HasRecast(xi::RecastType::Ability, static_cast<xi::Recast>(ability), 0s);
+    const bool locked   = busy || POwner->PAI->IsCurrentState<CInactiveState>();
+    const auto step     = sata::CloserSaStep(opening->first, opening->second, timer::count_milliseconds(PAbility->getAnimationTime()));
+    if (!sata::UseWhenReady(authorized, POwner->GetLocalVar("SQUAD_SATA_READY") == pending, eligible, effectOn, onRecast, locked, m_sataFollowUp, step))
+    {
+        return false;
+    }
+
+    // the ability's own target, as the rule path picks it (Sneak/Trick Attack: the mate itself)
+    CBattleEntity* abilityTarget = PAbility->getValidTarget() == TARGET_SELF ? static_cast<CBattleEntity*>(POwner) : target;
+    auto*          controller    = static_cast<CTrustController*>(POwner->PAI->GetController());
+    if (!controller->Ability(abilityTarget->entityId(), ability))
+    {
+        return false; // (refused: the rule pass may still try it, as before)
+    }
+
+    m_sataFollowUp      = true;
+    m_sataFollowUpUntil = tick + std::chrono::milliseconds(sata::FollowUpWindowMs);
+    m_sataUsedAbility   = ability;
+    m_sataUsedAt        = timer::now();
+    m_sataReqAbility    = 0;
+    return true;
+}
+
+// XI: Forever Offline (2026-11-23, final batch I-C, gambits_sata.h AbilityEndsThisTick): the paired Sneak/Trick Attack used
+// last is the current state, it has acted, its effect is on and its animation is over - the state ends in this tick's update
+auto CGambitsContainer::SataAbilityEndsThisTick(const timer::time_point tick) const -> bool
+{
+    if (m_sataUsedAbility == 0 || !POwner->PAI->IsCurrentState<CAbilityState>())
+    {
+        return false;
+    }
+
+    auto* state    = static_cast<CAbilityState*>(POwner->PAI->GetCurrentState());
+    auto* PAbility = state->GetAbility();
+    if (PAbility == nullptr || PAbility->getID() != m_sataUsedAbility)
+    {
+        return false;
+    }
+
+    const bool effectOn = POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SneakAttack, xi::StatusEffect::TrickAttack });
+    return sata::AbilityEndsThisTick(true, state->IsCompleted(), effectOn, timer::count_milliseconds(tick - m_sataUsedAt),
+                                     timer::count_milliseconds(PAbility->getCastTime()), timer::count_milliseconds(PAbility->getAnimationTime()));
+}
+
+// XI: Forever Offline (2026-11-23, final batch R, gambits_sata.h WithdrawAfterWeaponSkill): a weapon skill just went. If it was
+// the close of the opening a Sneak/Trick Attack was requested for, the thief stood in position and the effect is not on, the
+// request is obsolete: withdrawn here (no backoff), as the rule gate does. Anything else is left to the squad, as before.
+void CGambitsContainer::WithdrawSataAfterWeaponSkill(const CBattleEntity* target)
+{
+    const uint32 pending = POwner->GetLocalVar("SQUAD_SATA_REQ");
+    const auto   start   = SataOpeningStart(target);
+    const bool   same    = start.has_value() && *start == m_sataReqOpening;
+    const bool   effect  = POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SneakAttack, xi::StatusEffect::TrickAttack });
+    if (sata::WithdrawAfterWeaponSkill(POwner->GetLocalVar("SQUAD_SATA_MANAGED") != 0, pending, m_sataReqAbility, same,
+                                       POwner->GetLocalVar("SQUAD_SATA_READY"), effect))
+    {
+        POwner->SetLocalVar("SQUAD_SATA_REQ", 0);
+        POwner->SetLocalVar("SQUAD_SATA_TGT", 0);
+        POwner->SetLocalVar("SQUAD_SATA_READY", 0); // (the squad sets READY again from the request on its next tick anyway)
+    }
+    m_sataReqAbility = 0;
 }
 
 } // namespace gambits

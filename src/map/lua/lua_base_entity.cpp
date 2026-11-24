@@ -16322,6 +16322,17 @@ void CLuaBaseEntity::spawnPet(const sol::object& arg0)
             ShowError("CLuaBaseEntity::spawnPet : PetID is nullptr");
         }
     }
+    else if (m_PBaseEntity->objtype == TYPE_TRUST)
+    {
+        // XI: Forever Offline: a squad mate is a party member: a Call Wyvern, a summon, Call Beast, Activate or a Geo spell raises its pet
+        // exactly as it does for a player. A retail trust has no pets and stays as it was.
+        auto* PTrust = static_cast<CBattleEntity*>(m_PBaseEntity);
+        // (an automaton frame is built from the mate's own record, petutils::LoadPet: never from her master's automaton)
+        if (IsSquadMate(PTrust) && PTrust->PPet == nullptr && (arg0 != sol::lua_nil) && arg0.is<int>())
+        {
+            petutils::SpawnPet(PTrust, arg0.as<uint32>(), false);
+        }
+    }
     else if (m_PBaseEntity->objtype == TYPE_MOB)
     {
         auto* PMob = static_cast<CMobEntity*>(m_PBaseEntity);
