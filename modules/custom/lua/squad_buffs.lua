@@ -5,7 +5,7 @@
 -- buff is missing ("not status"), so every buff fell off and stayed off until the next free moment. This keeps them up
 -- the way a 2006 buffer did:
 --  - a buff a mate can cast is recast on whoever has it shortly before it wears off (under 25 seconds left): Protect,
---    Shell (Protectra, Shellra when two or more around the White Mage need it), Haste, Refresh, Regen, and on itself
+--    Shell (Protectra, Shellra when two or more around the White Mage need it), Haste, Refresh, and on itself
 --    Phalanx and Aquaveil. Stoneskin and Blink are left to the rules (they cannot be recast while up);
 --  - it only chooses who keeps a buff, never who gets one: the job rules still decide that;
 --  - never while someone in the party is under 50% HP, never below a quarter of its MP, not with its magic switch off;
@@ -35,7 +35,7 @@ B.BUFFS = {
       ra = { 'SHELLRA_V', 'SHELLRA_IV', 'SHELLRA_III', 'SHELLRA_II', 'SHELLRA' } },
     { effect = 'HASTE',    spells = { 'HASTE' } },
     { effect = 'REFRESH',  spells = { 'REFRESH' } },
-    { effect = 'REGEN',    spells = { 'REGEN_II', 'REGEN' } },
+    -- (no Regen: the White Mage casts it on the tank only when it is hurt in a fight, 2026-11-25, levi)
     { effect = 'PHALANX',  spells = { 'PHALANX' }, self = true },
     { effect = 'AQUAVEIL', spells = { 'AQUAVEIL' }, self = true },
 }
