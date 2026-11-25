@@ -28,6 +28,7 @@
 #include "items/item_linkshell.h"
 #include "monstrosity.h"
 #include "status_effect_container.h"
+#include "utils/hardcoreutils.h"
 #include "utils/mountutils.h"
 #include "zone.h"
 
@@ -448,5 +449,19 @@ void CCharUpdatePacket::updateWith(CCharEntity* PChar, ENTITYUPDATE type, uint8 
 
         packet->Flags4.TrialFlag     = 0; // Trial accounts not implemented.
         packet->Flags4.JobMasterFlag = PChar->getMod(xi::Mod::SUPERIOR_LEVEL) == 5 && PChar->m_jobMasterDisplay;
+
+        // (XI: Forever Offline, 2026-11-23) the game-mode marks beside the name (hardcoreutils::applyModeMarks): four
+        // marks the era never uses carry the four modes' shields, which the launcher draws into the game's icon sheet
+        {
+            const auto marks                = hardcoreutils::modeMarks(PChar);
+            packet->Flags1.PlayOnelineFlag  = marks.pol;
+            packet->Flags4.TrialFlag        = marks.trial;
+            packet->Flags3.MentorFlag       = marks.mentor;
+            packet->Flags3.LfgMasterFlag    = marks.recruit;
+            if (marks.mode != 0)
+            {
+                packet->Flags3.NewCharacterFlag = 0;
+            }
+        }
     }
 }

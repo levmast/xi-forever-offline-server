@@ -97,7 +97,24 @@ end
 -----------------------------------
 -- the queue file
 -----------------------------------
-local function enc(value)
+-- (2026-11-24, Ricc: !giveitem to a logged-out character "could not be") a table argument (!giveitem's
+-- addItem({ id = ..., quantity = ... })) is kept too: 't' then key:value pairs, each half escaped so its own , and :
+-- stay inside it
+local function esc(text)
+    return (string.gsub(text, '[%%,:|\t\r\n]', function(c)
+        return string.format('%%%02X', string.byte(c))
+    end))
+end
+
+local function unesc(text)
+    return (string.gsub(text, '%%(%x%x)', function(h)
+        return string.char(tonumber(h, 16))
+    end))
+end
+
+local enc
+
+enc = function(value, depth)
     local t = type(value)
     if t == 'number' then
         return 'n' .. tostring(value)
@@ -107,12 +124,24 @@ local function enc(value)
         return 's' .. string.gsub(value, '[%%\t\r\n|]', function(c)
             return string.format('%%%02X', string.byte(c))
         end)
+    elseif t == 'table' and (depth or 0) < 4 then
+        local parts = {}
+        for k, v in pairs(value) do
+            local key, val = enc(k, (depth or 0) + 1), enc(v, (depth or 0) + 1)
+            if key ~= 'x' and val ~= 'x' then
+                table.insert(parts, esc(key) .. ':' .. esc(val))
+            end
+        end
+
+        return 't' .. esc(table.concat(parts, ','))
     end
 
     return 'x'                                       -- nil (and anything that cannot be kept)
 end
 
-local function dec(text)
+local dec
+
+dec = function(text)
     local kind, body = string.sub(text, 1, 1), string.sub(text, 2)
     if kind == 'n' then
         return tonumber(body)
@@ -122,6 +151,20 @@ local function dec(text)
         return (string.gsub(body, '%%(%x%x)', function(h)
             return string.char(tonumber(h, 16))
         end))
+    elseif kind == 't' then
+        local result = {}
+        body = unesc(body)
+        for pair in string.gmatch(body, '[^,]+') do
+            local key, val = string.match(pair, '^([^:]*):(.*)$')
+            if key then
+                local k = dec(unesc(key))
+                if k ~= nil then
+                    result[k] = dec(unesc(val))
+                end
+            end
+        end
+
+        return result
     end
 
     return nil

@@ -24,6 +24,7 @@
 #include "ability.h"
 #include "common/earth_time.h"
 #include "ai/helpers/gambits_container.h"
+#include "ai/helpers/trust_enmity_target.h"
 #include "ai/states/magic_state.h"
 #include "ai/states/range_state.h"
 #include "data/enums/mob_mod.h"
@@ -1461,8 +1462,18 @@ auto CTrustController::GetTopEnmity() const -> CBattleEntity*
 {
     TracyZoneScoped;
 
+    // XI: Forever Offline (2026-11-23): a squad mate asks about the monster it is fighting itself; without one, and for
+    // every other trust, the master's battle target as before (see trust_enmity_target.h).
+    const bool  squadMate     = POwner->GetLocalVar("SQUAD_ID") != 0;
+    const auto* POwnTarget    = squadMate ? dynamic_cast<CMobEntity*>(POwner->GetBattleTarget()) : nullptr;
+    const auto* PMasterTarget = POwner->PMaster ? dynamic_cast<CMobEntity*>(POwner->PMaster->GetBattleTarget()) : nullptr;
+    if (POwnTarget != nullptr && (POwnTarget->isDead() || POwnTarget->PEnmityContainer == nullptr))
+    {
+        POwnTarget = nullptr; // (nothing to read there any more)
+    }
+
     CBattleEntity* PEntity = nullptr;
-    if (const auto* PMob = dynamic_cast<CMobEntity*>(POwner->PMaster->GetBattleTarget()))
+    if (const auto* PMob = trustenmity::TopEnmityTarget(squadMate, POwnTarget, PMasterTarget); PMob != nullptr && PMob->PEnmityContainer != nullptr)
     {
         return PMob->PEnmityContainer->GetHighestEnmity();
     }

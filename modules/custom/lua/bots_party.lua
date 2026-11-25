@@ -77,8 +77,34 @@ local function mpCost(id)
     return (ok and c) or 0
 end
 
+-- (2026-11-24, Mikoto: a healer bot stopped healing once level sync brought it down) knowing the spell is not enough:
+-- its main or support job has to be high enough for it NOW. Synced down, it still knows Cure III and picked it every
+-- time, the server refused it, and it never fell back to Cure II.
+local function levelOk(bot, id)
+    local ok, fit = pcall(function()
+        local sp = GetSpell(id)
+        if not sp then
+            return true
+        end
+
+        local main = sp:getLevel(bot:getMainJob())
+        if main ~= nil and main > 0 and main < 255 and main <= bot:getMainLvl() then
+            return true
+        end
+
+        local subJob = bot:getSubJob()
+        if subJob == nil or subJob == 0 then
+            return false
+        end
+
+        local sub = sp:getLevel(subJob)
+        return sub ~= nil and sub > 0 and sub < 255 and sub <= bot:getSubLvl()
+    end)
+    return not ok or fit
+end
+
 local function canCast(bot, id)
-    return bot:hasSpell(id) and bot:getMP() >= mpCost(id)
+    return bot:hasSpell(id) and bot:getMP() >= mpCost(id) and levelOk(bot, id)
 end
 
 -----------------------------------

@@ -378,6 +378,15 @@ local function becomeHardcore(player, mode)
         writeOut('start', player, mode, player:getMainJob(), 1, '')
     end
     pcall(H.wearTitle, player, mode)
+    -- (2026-11-24, the user: a new Randomized character showed the new-player "?" instead of its shield) the "?" would
+    -- cover the mode's mark, and the status sent at log in still had no mode: take the "?" off for good and send the
+    -- character's status again now, so the shield shows at once (not only after the next zone)
+    pcall(function()
+        player:setNewPlayer(false)
+    end)
+    pcall(function()
+        player:setCostume(player:getCostume())
+    end)
     tell(player, string.format('Your title is now "%s". It stays on as long as you play this mode.', H.TITLE_NAMES[mode]))
     print(string.format('[hardcore] %s is now %s', player:getName(), H.modeName(mode)))
 end
@@ -512,6 +521,17 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
     end
 
     pcall(H.wearTitle, player, mode)
+
+    -- (2026-11-24) a mode character never keeps the new-player "?": the game shows your own "?" from your saved
+    -- settings, not from the status, so it covered the shield on characters that became hardcore or Randomized
+    -- before this fix (Nyurami, Kandra). Turned off for good at log in; it shows from the next zone or log in.
+    if mode ~= 0 then
+        pcall(function()
+            if player:getNewPlayer() then
+                player:setNewPlayer(false)
+            end
+        end)
+    end
 
     -- a world that only takes hardcore visitors
     if mode == 0 and H.hardcoreOnly and xi.coop and xi.coop.isGuest and xi.coop.isGuest(player) then

@@ -204,11 +204,8 @@ custom/cpp/bots.cpp
 custom/lua/bots.lua
 # An add-on that runs squad mates (guards v1): its file loads after squad_bard_walk (it reads the Squads state those files set up)
 custom/lua/addon_owner.lua
-
-# Placeholder names: NM placeholders show "placeholder" as their name (data: tools/gen_placeholder_names.py)
-custom/lua/placeholder_names.lua
-
-# Loaded LAST: overrides here win over the era/phoenix folders above (fast travel overrides the Survival Guide menu)
-custom/late
 # Dev only: edit a Squads Lua file while the server runs and !squad reload (GM) / the file watcher reloads it in order. Does nothing unless a Squads file is saved or the command is used. Keep this line last.
 custom/lua/squad_reload.lua
+
+# Loaded LAST: overrides here win over the era/phoenix folders above (fast travel, always on)
+custom/late

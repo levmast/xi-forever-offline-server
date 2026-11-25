@@ -113,8 +113,14 @@ void GP_CLI_COMMAND_ITEM_DUMP::process(MapSession* PSession, CCharEntity* PChar)
             {
                 PLinkshell = linkshell::LoadLinkshell(lsid);
             }
-            PLinkshell->BreakLinkshell();
-            linkshell::UnloadLinkshell(lsid);
+            // (XI: Forever Offline, 2026-11-24, Hasuko) a linkshell brought over by a character transfer belongs to a
+            // linkshell that doesn't exist in this world: there is nothing to break, the shell is simply thrown away
+            // (this crashed the server)
+            if (PLinkshell)
+            {
+                PLinkshell->BreakLinkshell();
+                linkshell::UnloadLinkshell(lsid);
+            }
         }
     }
 

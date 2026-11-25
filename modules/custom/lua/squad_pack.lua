@@ -542,6 +542,7 @@ function P.tick(mob)
     local engaged = player:isEngaged()
     local partyFree = t - (r.last or 0) >= 20
     if engaged and not r.engaged then
+        r.closeCall = nil -- (a new fight: an old close call does not count)
         -- the pull: one mate calls it now and then
         if partyFree and math.random() < 0.25 then
             local m = pick(active)
@@ -556,6 +557,7 @@ function P.tick(mob)
             local hp = pct(m, 'getHP', 'getMaxHP')
             if hp < 30 and not r.hpLow[n] then
                 r.hpLow[n] = true
+                r.closeCall = true -- (2026-11-23) a close fight: s.scene_after may play when it ends
                 if math.random() < 0.5 and free(r, n, 60) then
                     if #active >= 3 and math.random() < 0.3 and playScene(player, 's.scene_lowhp', active, 1) then
                         break
@@ -576,7 +578,11 @@ function P.tick(mob)
         end
     elseif r.engaged and player:isAlive() then
         -- the fight just ended
-        if partyFree and math.random() < 0.15 then
+        local close = r.closeCall
+        r.closeCall = nil
+        if close and partyFree and #active >= 2 and math.random() < 0.4 and playScene(player, 's.scene_after', active, 3) then
+            -- (a short scene after a close call: J-NULL's "A Close Call", writing contribution #001)
+        elseif partyFree and math.random() < 0.15 then
             local m = pick(active)
             local n = m:getPacketName()
             local at = sayLater(player, n, P.line('s.after', n), rnd(2, 4))

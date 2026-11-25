@@ -11,4 +11,5 @@ target_sources(xi_map_battle PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/pathfind.h
     ${CMAKE_CURRENT_SOURCE_DIR}/targetfind.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/targetfind.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/trust_enmity_target.h
 )

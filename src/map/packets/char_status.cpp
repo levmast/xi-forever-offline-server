@@ -30,6 +30,7 @@
 #include "items/item_linkshell.h"
 #include "monstrosity.h"
 #include "status_effect_container.h"
+#include "utils/hardcoreutils.h"
 #include "utils/mountutils.h"
 #include "zone.h"
 
@@ -334,6 +335,19 @@ CCharStatusPacket::CCharStatusPacket(CCharEntity* PChar)
     flags4.GeoIndiSize    = 1;
     flags4.GeoIndiFlag    = 0;
     flags4.JobMasterFlag  = PChar->getMod(xi::Mod::SUPERIOR_LEVEL) == 5 && PChar->m_jobMasterDisplay;
+
+    // (XI: Forever Offline, 2026-11-23) the game-mode marks, the same as char_update.cpp, so you see your own
+    {
+        const auto marks       = hardcoreutils::modeMarks(PChar);
+        flags0.PlayOnelineFlag = marks.pol;
+        flags3.TrialFlag       = marks.trial;
+        flags3.MentorFlag      = marks.mentor;
+        flags3.LfgMasterFlag   = marks.recruit;
+        if (marks.mode != 0)
+        {
+            flags3.NewCharacterFlag = false;
+        }
+    }
 
     // GEO bubble effects, changes bubble effect depending on what effect is activated.
     if (PChar->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::ColureActive))

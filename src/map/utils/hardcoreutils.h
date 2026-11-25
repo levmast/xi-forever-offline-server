@@ -130,6 +130,32 @@ namespace hardcoreutils
         }
     }
 
+    // The mode's mark beside the name (2026-11-23). The game only draws its own fixed marks there, so four that the
+    // era never uses carry the four shields (the launcher draws them into the game's icon sheet, launcher_client.py):
+    //   Iron = trial account mark (the leaf), Steel = PlayOnline mark (the blue orb), Silver = mentor mark (the globe),
+    //   Randomized = "accepting party requests" (the goblet)
+    // Nobody else ever shows these four (a client's own mentor / recruit switch is ignored), and a character with a
+    // mode doesn't show the new-player mark (it would hide the shield).
+    struct ModeMarks
+    {
+        int32 mode    = 0;
+        bool  pol     = false;
+        bool  trial   = false;
+        bool  mentor  = false;
+        bool  recruit = false;
+    };
+
+    inline auto modeMarks(const CCharEntity* PChar) -> ModeMarks
+    {
+        ModeMarks marks;
+        marks.mode    = mode(PChar);
+        marks.trial   = marks.mode == 1;
+        marks.pol     = marks.mode == 2;
+        marks.mentor  = marks.mode == 3;
+        marks.recruit = marks.mode == 4;
+        return marks;
+    }
+
     inline auto isModeTitle(uint16 title) -> bool
     {
         return title >= 1078 && title <= 1081;

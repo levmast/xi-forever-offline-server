@@ -67,6 +67,7 @@
 #include "map/packets/entity_update.h" // MODEL_EQUIPPED (squadRefreshLook)
 #include "map/ai/controllers/trust_controller.h"
 #include "map/ai/helpers/gambits_container.h"
+#include "map/ai/helpers/squad_spell_kind.h"
 #include "map/packets/c2s/0x032_trade_req.h"
 #include "map/packets/c2s/0x0b5_chat_std.h"
 #include "map/packets/c2s/0x036_item_transfer.h"
@@ -1347,7 +1348,12 @@ bool squadRefreshLook(CLuaBaseEntity* mate)
         return false;
     }
 
-    PTrust->updatemask |= UPDATE_LOOK;
+    // (2026-11-24, Ricc: mates standing at a camp vanished a few seconds after they were called) for a renamed entity with an equipped
+    // look, the update that carries the look is always sent as position + claim + general + look (CEntityUpdatePacket::updateWith
+    // sets its flags to 0x57), but the packet only fills the parts its own mask asks for. With the look alone, a mate that stood
+    // still (nothing else pending) went out with a position of 0, 0, 0 and no HP, and the client put it there. Ask for those parts
+    // too, so what the flags announce is in the packet: the same parts the spawn packet carries.
+    PTrust->updatemask |= UPDATE_COMBAT | UPDATE_LOOK;
     return true;
 }
 
@@ -1839,7 +1845,13 @@ auto squadCastSpell(CLuaBaseEntity* player, CLuaBaseEntity* mate, const uint16 s
 
 // Lua: SquadSpellKind(spellId) -> "enemy" | "dead" | "party" | "self" | "" (unknown spell)
 // What a spell can be cast on, read from the server's spell table with the same flags trySquadCast uses: an attack or debuff spell goes on an
-// enemy, a Raise on a fallen party member, a buff or heal on a party member, and anything else (Warp, Escape, Utsusemi, Reraise) only on its caster.
+// enemy, a Raise on a fallen party member, a buff or heal on a party member, and anything else (Warp, Utsusemi, Reraise) only on its caster.
+// (2026-11-24) A spell cast on the caster that reaches the party around it (Protectra, Shellra, the Bar-ra spells, a Teleport, a song) is
+// "party" too: the rule is in map/ai/helpers/squad_spell_kind.h.
+static_assert(squad::spellkind::TargetSelf == TARGET_SELF && squad::spellkind::TargetParty == TARGET_PLAYER_PARTY &&
+              squad::spellkind::TargetAlliance == TARGET_PLAYER_ALLIANCE && squad::spellkind::TargetDead == TARGET_PLAYER_DEAD);
+static_assert(squad::spellkind::AoeRadial == SPELLAOE_RADIAL && squad::spellkind::AoePianissimo == SPELLAOE_PIANISSIMO);
+
 auto squadSpellKind(const uint16 spellId) -> std::string
 {
     CSpell* PSpell = spell::GetSpell(static_cast<SpellID>(spellId));
@@ -1848,22 +1860,15 @@ auto squadSpellKind(const uint16 spellId) -> std::string
         return "";
     }
 
-    if (PSpell->canTargetEnemy())
-    {
-        return "enemy";
-    }
+    const squad::spellkind::Facts facts{
+        .canTargetEnemy = PSpell->canTargetEnemy(),
+        .validTargets   = PSpell->getValidTarget(),
+        .aoe            = PSpell->getAOE(),
+        .radius         = PSpell->getRadius(),
+        .song           = PSpell->getSpellGroup() == SPELLGROUP_SONG,
+    };
 
-    if ((PSpell->getValidTarget() & TARGET_PLAYER_DEAD) != 0)
-    {
-        return "dead";
-    }
-
-    if ((PSpell->getValidTarget() & (TARGET_PLAYER_PARTY | TARGET_PLAYER_ALLIANCE)) != 0)
-    {
-        return "party";
-    }
-
-    return "self";
+    return squad::spellkind::Name(squad::spellkind::Classify(facts));
 }
 
 // Lua: SquadTryAbility(player, mate, abilityId) -> result name (cast, unknown, notready, notarget, busy)

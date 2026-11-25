@@ -131,6 +131,9 @@ mission.sections =
 
                 [87] = function(player, csid, option, npc)
                     player:setMissionStatus(mission.areaId, 2)
+                    -- (XI: Forever Offline, 2026-11-24, lilibun) the cutscene starts without the key item, so the king's
+                    -- line shows the flower's name blank: say it here (the ??? is in Western Altepa Desert)
+                    player:printToPlayer('King Destin wishes for a Dreamrose. It is said to bloom in the Western Altepa Desert.', xi.msg.channel.SYSTEM_3)
                 end,
 
                 [111] = function(player, csid, option, npc)

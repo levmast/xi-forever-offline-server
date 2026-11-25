@@ -652,6 +652,10 @@ void CZoneEntities::DecreaseZoneCounter(CCharEntity* PChar)
     m_charList.erase(PChar->targid);
     m_charTargIds.erase(PChar->targid);
 
+    // A char that leaves is no longer waiting to leave. Whoever took it out may free it next (a closed session,
+    // a bot logging out), and ZoneServer would read the freed char from this set after its next suspension.
+    m_charsToChangeZone.erase(PChar);
+
     ShowDebug("CZone:: %s DecreaseZoneCounter <%u> %s", m_zone->getName(), m_charList.size(), PChar->getName());
 }
 
@@ -2150,16 +2154,24 @@ auto CZoneEntities::ZoneServer(timer::time_point tick) -> Task<void>
 
     auto processedCount = 0U;
 
-    auto it = m_charsToChangeZone.begin();
-    while (it != m_charsToChangeZone.end())
+    // This loop suspends (IsZoneReady, the yields below), and a char can leave the zone and be freed while it
+    // does. So it walks a copy, never an iterator into the set, and asks the set before it reads a char:
+    // DecreaseZoneCounter takes a leaving char out of m_charsToChangeZone, so a char still in the set is still
+    // in this zone. The check compares pointers and never reads the char.
+    const std::vector<CCharEntity*> charsToChangeZone(m_charsToChangeZone.begin(), m_charsToChangeZone.end());
+    for (auto* PChar : charsToChangeZone)
     {
-        auto* PChar       = *it;
-        bool  shouldErase = false;
+        if (!m_charsToChangeZone.contains(PChar))
+        {
+            continue; // left during an earlier suspension
+        }
+
+        bool shouldErase = false;
 
         // charTick adds the char back each tick, so it moves once canZoneOut(). A logout goes now.
         if (PChar->status != xi::Status::Shutdown && !PChar->PSession->canZoneOut())
         {
-            it = m_charsToChangeZone.erase(it);
+            m_charsToChangeZone.erase(PChar);
             continue;
         }
 
@@ -2178,6 +2190,11 @@ auto CZoneEntities::ZoneServer(timer::time_point tick) -> Task<void>
         else if (PChar->requestedWarp != WarpRequest::None)
         {
             const bool ready = co_await zoneutils::IsZoneReady(scheduler_, config_, PChar->profile.home_point.destination);
+            if (!m_charsToChangeZone.contains(PChar))
+            {
+                continue; // left while we waited for the zone
+            }
+
             if (ready)
             {
                 PChar->clearPacketList();
@@ -2192,6 +2209,11 @@ auto CZoneEntities::ZoneServer(timer::time_point tick) -> Task<void>
         else if (PChar->loc.destination != ZONE_NO_DESTINATION)
         {
             const bool ready = co_await zoneutils::IsZoneReady(scheduler_, config_, PChar->loc.destination);
+            if (!m_charsToChangeZone.contains(PChar))
+            {
+                continue; // left while we waited for the zone
+            }
+
             if (ready)
             {
                 PChar->clearPacketList();
@@ -2205,11 +2227,7 @@ auto CZoneEntities::ZoneServer(timer::time_point tick) -> Task<void>
         if (shouldErase)
         {
             charutils::removeCharFromZone(PChar);
-            it = m_charsToChangeZone.erase(it); // Erase and get next iterator
-        }
-        else
-        {
-            ++it; // Move to next element if we didn't erase
+            m_charsToChangeZone.erase(PChar); // (DecreaseZoneCounter did this already for a char in this zone)
         }
 
         // We're going to yield to the scheduler every 16 players we process to ensure

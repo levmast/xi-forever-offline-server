@@ -3499,7 +3499,16 @@ void CBattleEntity::OnRangedAttack(CRangeState& state, action_t& action)
             actionResult.messageID = MsgBasic::RangedAttackAbsorbs;
         }
 
-        if (isChar)
+        // (XI: Forever Offline, 2026-11-24, Syfin: Acid Bolt's Defense Down never landed from a squad mate) squad mates
+        // too: the ranged weapon and ammo the squad gave them (m_Weapons) get the same additional effects as a player's
+        CItemWeapon* PEffectItem = PItem;
+        CItemWeapon* PEffectAmmo = PAmmo;
+        if (!isChar && isSquadMate())
+        {
+            PEffectItem = dynamic_cast<CItemWeapon*>(m_Weapons[SLOT_RANGED]);
+            PEffectAmmo = dynamic_cast<CItemWeapon*>(m_Weapons[SLOT_AMMO]);
+        }
+        if (isChar || isSquadMate())
         {
             // add additional effects
             // this should go AFTER damage taken
@@ -3538,13 +3547,13 @@ void CBattleEntity::OnRangedAttack(CRangeState& state, action_t& action)
             };
 
             // No Ranged weapons that have ammo contain an add effect on the weapon (but this is edge case 11)
-            if (PAmmo)
+            if (PEffectAmmo)
             {
-                checkAddEffect(PAmmo);
+                checkAddEffect(PEffectAmmo);
             }
-            else if (PItem) // ranged item with no ammo (boomerang/chakram)
+            else if (PEffectItem) // ranged item with no ammo (boomerang/chakram)
             {
-                checkAddEffect(PItem);
+                checkAddEffect(PEffectItem);
             }
 
             if (actionResult.addEffectMessage == MsgBasic::AddEffectDamage && actionResult.addEffectParam < 0)
