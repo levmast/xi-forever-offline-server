@@ -3266,6 +3266,10 @@ restTick = function(mob)
         return
     end
 
+    if mob:getLocalVar('SQUAD_POSE') ~= 0 then
+        return -- (GM !squad pose test holds this animation)
+    end
+
     if not mob:isAlive() then
         if mob:getLocalVar('SQUAD_FIGHT_REST') == 1 then
             fightRest.stop(mob, master)
@@ -4957,11 +4961,22 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
     if action == 'pose' and player:getGMLevel() > 0 then
         -- (GM test: which animation id shows a sitting mate in the game client, e.g. 33 healing, 47 sit)
-        local id = tonumber(arg1) or 0
+        -- 2026-11-26 (levi): no number = say what the server holds for each mate (0 idle, 1 fighting, 33 resting).
+        -- A number is held (restTick leaves a posed mate alone, it used to stand 33 up on the next tick); 0 lets go.
+        if arg1 == nil or tonumber(arg1) == nil then
+            for _, trust in ipairs(squadTrusts(player)) do
+                say(player, string.format('%s: animation %d, engaged %s, held %d.', trust:getName(), trust:getAnimation(),
+                    tostring(trust:isEngaged()), trust:getLocalVar('SQUAD_POSE')))
+            end
+            return
+        end
+
+        local id = tonumber(arg1)
         for _, trust in ipairs(squadTrusts(player)) do
+            trust:setLocalVar('SQUAD_POSE', id)
             trust:setAnimation(id)
         end
-        say(player, 'Squad mates set to animation ' .. id .. ' (0 stands them up).')
+        say(player, 'Squad mates set to animation ' .. id .. ' and held there (!squad pose 0 lets them go).')
         return
     end
 
