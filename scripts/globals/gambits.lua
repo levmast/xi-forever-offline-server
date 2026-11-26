@@ -102,6 +102,9 @@ ai.condition =
     HAS_MP_MPP_LT      = 41, -- (XI: Forever Offline) like MPP_LT, false without an MP pool
     HAS_MP_MPP_GTE     = 42, -- (XI: Forever Offline) like MPP_GTE, false without an MP pool
     MOD_LT             = 43, -- (XI: Forever Offline) a modifier below a number: argument = mod id + number * 65536 (e.g. Utsusemi shadows)
+    ENEMY_FAMILY       = 44, -- (XI: Forever Offline, F1) the enemy is of this monster family (xi.mobFamily, e.g. GOBLIN)
+    PARTY_COUNT        = 45, -- (XI: Forever Offline, F2) party members (with a status) counted: filter | number << 16 | comparison << 24
+    ENEMY_COUNT        = 46, -- (XI: Forever Offline, F2) monsters fighting the party near the target counted: hp | radius << 8 | number << 16 | comparison << 24
 }
 ai.c = ai.condition
 

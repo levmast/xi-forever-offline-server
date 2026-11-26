@@ -107,6 +107,36 @@ CMeritPoints::CMeritPoints(CCharEntity* PChar)
     std::memcpy(merits, meritDefaults, sizeof(merits));
 
     LoadMeritPoints(PChar->id);
+
+    // (XI: Forever Offline, 2026-11-25, krazy; the user chose "every merit starts at its maximum") map.FULL_MERITS: the
+    // server already lets every merit past its group limit (RaiseMerit), but the game's own merit menu still greys a
+    // merit out once its group looks full by the menu's count (HP 8/8 left MP grey), so the request never came. With the
+    // switch on, every merit is simply at its maximum, nothing to spend. Done in memory at each log in and not saved, so
+    // switching Full merits off gives the character back exactly what it had bought. Merits that teach a spell or a
+    // weapon skill teach it too (for this session; the spell list was loaded before this, in LoadChar).
+    if (PChar != nullptr && settings::get<uint8>("map.FULL_MERITS") != 0)
+    {
+        for (auto& merit : merits)
+        {
+            if (merit.upgrade == 0 || merit.count >= merit.upgrade)
+            {
+                continue;
+            }
+
+            merit.count = merit.upgrade;
+            merit.next  = nextUpgradeCost(merit);
+
+            if (merit.spellid != 0)
+            {
+                charutils::addSpell(PChar, merit.spellid);
+            }
+
+            if (merit.wsunlockid != 0 && !charutils::hasLearnedWeaponskill(PChar, merit.wsunlockid))
+            {
+                charutils::addLearnedWeaponskill(PChar, merit.wsunlockid);
+            }
+        }
+    }
 }
 
 void CMeritPoints::LoadMeritPoints(const uint32 charid)

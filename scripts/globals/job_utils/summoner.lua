@@ -163,6 +163,10 @@ local function getMPCost(baseMPCost, player, petskill)
     return mpCost
 end
 
+-- XI: Forever Offline (F13, 2026-11-25): the same base cost canUseBloodPact checks, for a squad Summoner's planning
+-- (modules/custom/lua/squad_summoner.lua: can it afford the summon AND the pact before it releases its avatar)
+xi.job_utils.summoner.getBaseMPCost = getBaseMPCost
+
 -- Bloodpact Delay is handled in charentity.cpp
 xi.job_utils.summoner.canUseBloodPact = function(player, pet, target, petAbility)
     -- The distance checks are performed in core but should be returned here when possible.

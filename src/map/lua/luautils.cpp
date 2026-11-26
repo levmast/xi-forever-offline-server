@@ -3174,7 +3174,9 @@ auto additionalEffectAttack(CBattleEntity* PAttacker, CBattleEntity* PDefender, 
     TracyZoneScoped;
 
     sol::function additionalEffectAttack;
-    if (dynamic_cast<const CCharEntity*>(PAttacker) != nullptr)
+    // (XI: Forever Offline, 2026-11-25, Syfin and Watts: Acid Bolt still never landed from a squad mate) squad mates too:
+    // battle_entity.cpp now hands their real bolts and arrows here, and this check let only players through
+    if (dynamic_cast<const CCharEntity*>(PAttacker) != nullptr || (PAttacker != nullptr && PAttacker->isSquadMate()))
     {
         additionalEffectAttack = lua[sol::create_if_nil]["xi"]["additionalEffect"]["attack"];
     }

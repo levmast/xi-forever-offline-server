@@ -73,12 +73,20 @@ namespace hardcoreutils
         return true;
     }
 
-    // The rate for this character: its mode's value for the key when the profile has one, else the world's setting.
+    // (2026-11-25, the user) On the hub a visitor plays at the rates of its home world: the visiting launcher puts them in
+    // the passport as char vars "[HR]<key>" (for example "[HR]map.EXP_RATE"), stored as rate x 1000 + 1 so that a rate
+    // of 0 can travel too (a var of 0 = not set). Only exp, drops, gil, skill-ups, crafting and the like travel, never
+    // combat settings. Read anywhere else, these vars do nothing.
+    inline const std::string HubRatePrefix = "[HR]";
+
+    // The rate for this character, first match wins:
+    //   1. Steel / Silver: the mode's own profile (xi.hardcore.rates[mode], which only has those two modes)
+    //   2. on The Hub (xi.hardcore.visitorRates, hardcore_world.lua visitor_rates): the rates the visitor brought from home ("[HR]" vars)
+    //   3. the world's own setting
     inline auto rate(const CCharEntity* PChar, const std::string& key) -> double
     {
         const double base = settings::get<double>(key);
-        const int32  m    = mode(PChar);
-        if (m == 0)
+        if (PChar == nullptr)
         {
             return base;
         }
@@ -95,20 +103,35 @@ namespace hardcoreutils
             return base;
         }
 
-        const sol::optional<sol::table> rates = (*hcTable)["rates"].get<sol::optional<sol::table>>();
-        if (!rates)
+        const int32 m = mode(PChar);
+        if (m != 0)
         {
-            return base;
+            const sol::optional<sol::table> rates = (*hcTable)["rates"].get<sol::optional<sol::table>>();
+            if (rates)
+            {
+                const sol::optional<sol::table> row = (*rates)[m].get<sol::optional<sol::table>>();
+                if (row)
+                {
+                    const sol::optional<double> value = (*row)[key].get<sol::optional<double>>();
+                    if (value)
+                    {
+                        return *value;
+                    }
+                }
+            }
         }
 
-        const sol::optional<sol::table> row = (*rates)[m].get<sol::optional<sol::table>>();
-        if (!row)
+        const sol::optional<bool> visitorRates = (*hcTable)["visitorRates"].get<sol::optional<bool>>();
+        if (visitorRates && *visitorRates)
         {
-            return base;
+            const int32 stored = PChar->getCharVar(HubRatePrefix + key);
+            if (stored > 0)
+            {
+                return static_cast<double>(stored - 1) / 1000.0;
+            }
         }
 
-        const sol::optional<double> value = (*row)[key].get<sol::optional<double>>();
-        return value ? *value : base;
+        return base;
     }
 
     // The mode's own title (the client's title list has empty slots 1078 - 1115; the launcher writes these four

@@ -134,6 +134,7 @@ void data_session::read_func()
                                                     "INNER JOIN char_jobs  USING(charid) "
                                                     "LEFT JOIN  char_flags USING(charid) "
                                                     "WHERE accid = ? "
+                                                    "ORDER BY charid "   // XI: Forever Offline: a fixed order, so the launcher's character cards know each slot
                                                     "LIMIT ?",
                                                     session.accountID,
                                                     numContentIds);

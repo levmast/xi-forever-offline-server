@@ -78,13 +78,17 @@ D.FAMILIES = {
     refresh = { name = 'Refresh', spells = tiers('REFRESH', 2), effect = 'REFRESH', kind = 'target', scope = 'all', roles = { 5, 20 }, words = { 'refresh' } },
     protect = { name = 'Protect', spells = tiers('PROTECT', 5), effect = 'PROTECT', kind = 'target', scope = 'all', roles = BUFF_ROLES, words = { 'protect', 'prot' } },
     shell = { name = 'Shell', spells = tiers('SHELL', 5), effect = 'SHELL', kind = 'target', scope = 'all', roles = BUFF_ROLES, words = { 'shell' } },
-    blink = { name = 'Blink', spells = { 'BLINK' }, effect = 'BLINK', kind = 'target', scope = 'all', roles = { 5, 3, 20 }, words = { 'blink' } },
+    -- (B4, 2026-11-25) kind 'own': a spell that only lands on its caster (Blink, Stoneskin, Phalanx, Aquaveil: valid target "self", single
+    -- target). "blink" / "all blink" asks every mate that knows it to cast it on herself, each at the same time, and each one's landing is
+    -- checked on her; "Ayame blink" is Ayame only. Before, they were 'target' spells aimed at you: the cast landed on the mate anyway, but
+    -- the need check and the "did it land" check looked at you, and the mates took turns.
+    blink = { name = 'Blink', spells = { 'BLINK' }, effect = 'BLINK', kind = 'own', roles = { 5, 3, 20 }, words = { 'blink' } },
     stoneskin = {
-        name = 'Stoneskin', spells = { 'STONESKIN' }, effect = 'STONESKIN', kind = 'target', scope = 'all', roles = { 5, 3, 20 }, words = { 'stoneskin', 'stone skin', 'ss' },
+        name = 'Stoneskin', spells = { 'STONESKIN' }, effect = 'STONESKIN', kind = 'own', roles = { 5, 3, 20 }, words = { 'stoneskin', 'stone skin', 'ss' },
     },
-    phalanx = { name = 'Phalanx', spells = { 'PHALANX' }, effect = 'PHALANX', kind = 'target', scope = 'all', roles = { 5 }, words = { 'phalanx' } },
+    phalanx = { name = 'Phalanx', spells = { 'PHALANX' }, effect = 'PHALANX', kind = 'own', roles = { 5 }, words = { 'phalanx' } },
     regen = { name = 'Regen', spells = tiers('REGEN', 3), effect = 'REGEN', kind = 'target', scope = 'all', roles = { 3, 20, 5 }, words = { 'regen' } },
-    aquaveil = { name = 'Aquaveil', spells = { 'AQUAVEIL' }, effect = 'AQUAVEIL', kind = 'target', scope = 'all', roles = { 5, 3, 20 }, words = { 'aquaveil', 'aqua veil' } },
+    aquaveil = { name = 'Aquaveil', spells = { 'AQUAVEIL' }, effect = 'AQUAVEIL', kind = 'own', roles = { 5, 3, 20 }, words = { 'aquaveil', 'aqua veil' } },
     cure = {
         name = 'Cure', spells = tiers('CURE', 5), kind = 'target', scope = 'all', need = 'hp', roles = HEAL_ROLES, words = { 'cure', 'heal' },
         phrases = { 'low hp', 'hurt', 'im hurt' },
@@ -131,8 +135,11 @@ D.FAMILIES = {
     teleport_altep = { name = 'Teleport-Altep', spells = { 'TELEPORT_ALTEP' }, kind = 'party', roles = { 3, 5, 20 }, words = { 'teleport altep', 'tele altep', 'teleport-altep', 'altep' } },
     teleport_vahzl = { name = 'Teleport-Vahzl', spells = { 'TELEPORT_VAHZL' }, kind = 'party', roles = { 3, 5, 20 }, words = { 'teleport vahzl', 'tele vahzl', 'teleport-vahzl', 'vahzl' } },
     -- Warp takes only the caster, so it is asked as Warp II (it takes the party member it is cast on)
-    warp = { name = 'Warp', spells = { 'WARP_II' }, kind = 'target', scope = 'pc', roles = { 4, 5, 20 }, words = { 'warp', 'warp home', 'go home' } },
-    escape = { name = 'Escape', kind = 'caster', spells = {}, roles = {}, words = { 'escape' }, refuse = 'Escape only takes the caster. Teleport or Warp II can move us.' },
+    warp = { name = 'Warp', spells = { 'WARP_II' }, kind = 'target', scope = 'pc', roles = { 4, 5, 20 }, words = { 'warp', 'warp home', 'go home', 'd2', 'warp ii', 'warp 2', 'warp2' } },  -- (2026-11-25, JØ: "D2", players' name for Warp II)
+    -- (B2, 2026-11-25, Frost: "Escape only takes the caster" for /p escape) Escape is cast on its caster and takes the party members
+    -- around her out of the area, like the Teleports: a 'party' request (SquadSpellKind says "party" for it since the Protectra II
+    -- fix). It was refused here as 'caster' before the cast was ever tried. Black Mages first.
+    escape = { name = 'Escape', spells = { 'ESCAPE' }, kind = 'party', roles = { 4 }, words = { 'escape' } },
     -- not a spell: the squad mates eat now (the food rules of squad.lua decide what and whether)
     food = { name = 'Food', kind = 'food', spells = {}, roles = {}, words = { 'food', 'eat', 'feed', 'snack', 'meal', 'lunch', 'dinner', 'chow' } },
     reraise = { name = 'Reraise', kind = 'caster', spells = {}, roles = {}, words = { 'reraise' }, refuse = 'Reraise only lands on the caster, I cannot put it on you.' },

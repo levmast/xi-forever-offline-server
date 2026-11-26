@@ -27,6 +27,7 @@ juice.items =
     [4512] = { name = 'Vampire Juice',   power = 2, duration = 90, regen = 2 },
     [5438] = { name = 'Strange Juice',   power = 2, duration = 300 },
     [5932] = { name = 'Kitron Juice',    power = 3, duration = 180 },
+    [4558] = { name = 'Yagudo Drink',    power = 2, duration = 180 }, -- (2026-11-25, Hasuko) the Windurst drink: Refresh like a juice
 }
 
 -- "Unlimited juice": what a mate drinks for free, by its level

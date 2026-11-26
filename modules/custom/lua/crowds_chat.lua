@@ -692,10 +692,15 @@ function chat.onBotThink(zoneId, speakers, players, speak)
 
             speak(a, 0, l1)
             spoke(a:getName())
+            -- (2026-11-25, Grim, Red, Zuken: xi_map crashed in isAlive with the living world on, mostly in busy towns)
+            -- the partner is a bot player, and a bot that logged out in those few seconds is deleted: the kept handle
+            -- then pointed at freed memory. Look it up again by its id; a bot that left gives nil.
+            local partnerId = partner:getID()
             a:timer(rnd(3000, 6000), function()
-                if partner:isAlive() then
-                    speak(partner, 0, l2)
-                    spoke(partner:getName())
+                local p2 = GetPlayerByID(partnerId)
+                if p2 ~= nil and p2:isAlive() then
+                    speak(p2, 0, l2)
+                    spoke(p2:getName())
                 end
             end)
         else

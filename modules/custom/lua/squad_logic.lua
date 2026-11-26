@@ -193,6 +193,18 @@ function L.onChat(player, text, hadAutoTranslate)
         end
     end
 
+    -- (2026-11-24) a squad Summoner's avatar: "Ifrit", "Ayame Shiva", "all Garuda", "release", "Ayame auto" (squad_summoner.lua)
+    local smn = xi.squad.summoner
+    if smn ~= nil and type(smn.chat) == 'function' then
+        local has = xi.squad.avatarHas and xi.squad.avatarHas(player) or nil
+        local ok, handled = pcall(smn.chat, player, askedMates, everyone, askedMates ~= mates, words, has)
+        if ok and handled then
+            return
+        elseif not ok then
+            print('[squad_logic] summoner chat failed: ' .. tostring(handled))
+        end
+    end
+
     local spellName = join(words)
     local spellId   = SquadSpellIdByName(spellName)
 

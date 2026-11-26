@@ -1390,8 +1390,15 @@ auto CCharEntity::ValidTarget(CBattleEntity* PInitiator, uint16 targetFlags) -> 
 
     bool isSameParty      = PParty && PInitiator->PParty && PInitiator->PParty == PParty;
     bool isSameAlliance   = PParty && PParty->m_PAlliance && PInitiator->PParty && PInitiator->PParty->m_PAlliance && PParty->m_PAlliance == PInitiator->PParty->m_PAlliance;
-    bool isPartyPetMaster = PInitiator->PMaster && PInitiator->PMaster->PParty && PInitiator->PMaster->PParty == PParty;
-    bool isSoloPetMaster  = PParty == nullptr && PInitiator->PMaster == this;
+    // XI: Forever Offline (F13): a trust has no party of its own, it belongs to its master's. So the pet of a squad mate (a
+    // Summoner's avatar) counts as a pet of the mate's player here, and its party Blood Pacts may reach that player.
+    const CBattleEntity* PPetOwner = PInitiator->PMaster;
+    if (PPetOwner && PPetOwner->objtype == TYPE_TRUST && PPetOwner->PMaster)
+    {
+        PPetOwner = PPetOwner->PMaster;
+    }
+    bool isPartyPetMaster = PPetOwner && PPetOwner->PParty && PPetOwner->PParty == PParty;
+    bool isSoloPetMaster  = PParty == nullptr && PPetOwner == this;
     bool targetsParty     = targetFlags & TARGET_PLAYER_PARTY;
     bool targetsAlliance  = targetFlags & TARGET_PLAYER_ALLIANCE;
     bool hasPianissimo    = (targetFlags & TARGET_PLAYER_PARTY_PIANISSIMO) && PInitiator->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::Pianissimo);

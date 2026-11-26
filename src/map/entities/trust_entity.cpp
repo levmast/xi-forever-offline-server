@@ -40,6 +40,9 @@
 #include "recast_container.h"
 #include "status_effect_container.h"
 #include "utils/battleutils.h"
+#include "utils/itemutils.h"  // F12: the WS gear set's items
+#include "utils/trustutils.h" // F12: BuildSquadSkills after a gear swap
+#include "items/item_equipment.h"
 #include "zone.h"
 #include "common/settings.h" // main.SQUAD_MATES_RAISABLE
 
@@ -185,6 +188,7 @@ void ReleasePet(CBattleEntity* PMaster)
 
 void CTrustEntity::Die()
 {
+    RestoreSquadWsSet(); // (F12) a mate knocked out in the middle of a weapon skill keeps no set modifiers
     ReleasePet(this);
     luautils::OnMobDeath(this, nullptr);
     PEnmityContainer->Clear();
@@ -303,6 +307,7 @@ auto CTrustEntity::ValidTarget(CBattleEntity* PInitiator, uint16 targetFlags) ->
 
 void CTrustEntity::OnDespawn(CDespawnState& /*unused*/)
 {
+    RestoreSquadWsSet(); // (F12)
     ReleasePet(this);
 
     if (GetHPP() > 0)
@@ -333,6 +338,17 @@ void CTrustEntity::OnMobSkillFinished(CMobSkillState& state, action_t& action)
 
 void CTrustEntity::OnWeaponSkillFinished(CWeaponSkillState& state, action_t& action)
 {
+    // (F12) the WS gear set was put on when the weapon skill started (CTrustController::WeaponSkill): take it off as soon
+    // as the damage below is done, on every way out of this function. The state's Cleanup restores it again (harmless).
+    struct WsSetRestore
+    {
+        CTrustEntity* self;
+        ~WsSetRestore()
+        {
+            self->RestoreSquadWsSet();
+        }
+    } wsSetRestore{ this };
+
     // CMobEntity::OnWeaponSkillFinished only taps the deaggro timer. CTrustController replaces the mob
     // ticks that read it.
     // NOLINTNEXTLINE(bugprone-parent-virtual-call): Grandparent call, skips CMobEntity's impl on purpose.
@@ -436,4 +452,104 @@ auto CTrustEntity::GetUntargetable() const -> bool
     }
 
     return CMobEntity::GetUntargetable();
+}
+
+// ---------------------------------------------------------------- XI: Forever Offline (F12): the WS gear set
+namespace
+{
+
+void addItemMods(CTrustEntity* PTrust, const uint16 itemId)
+{
+    if (const auto* item = xi::items::lookup<CItemEquipment>(itemId))
+    {
+        auto mods = item->modList; // (a copy: addModifiers takes a non-const pointer, as in squad.cpp applyEquipment)
+        PTrust->addModifiers(&mods);
+    }
+}
+
+void delItemMods(CTrustEntity* PTrust, const uint16 itemId)
+{
+    if (const auto* item = xi::items::lookup<CItemEquipment>(itemId))
+    {
+        auto mods = item->modList;
+        PTrust->delModifiers(&mods);
+    }
+}
+
+// After a swap: max HP/MP and the skills follow the gear; current HP/MP are clamped to the new maximum, never refilled
+void afterSwap(CTrustEntity* PTrust)
+{
+    trustutils::BuildSquadSkills(PTrust);
+    PTrust->UpdateHealth(); // (clamps hp/mp to the new maximum, battle_entity.cpp)
+    PTrust->updatemask |= UPDATE_HP;
+}
+
+} // namespace
+
+auto CTrustEntity::ApplySquadWsSet() -> bool
+{
+    if (!isSquadMate() || isDead() || squadWsLedger_.active())
+    {
+        return false;
+    }
+
+    squad::wsset::Gear outfit{};
+    for (uint8 slot = 0; slot < squad::wsset::SlotCount; ++slot)
+    {
+        outfit[slot] = squadEquip(slot);
+    }
+
+    const uint8  level  = GetMLevel();
+    const uint32 jobBit = 1u << (static_cast<uint8>(GetMJob()) - 1);
+    const auto   plan   = squad::wsset::MakePlan(
+        squadWsSet_, outfit,
+        [level, jobBit](const uint16 itemId)
+        {
+            // (checked again here: a Level Sync or a level drop since the set was saved)
+            const auto* item = xi::items::lookup<CItemEquipment>(itemId);
+            return item != nullptr && item->getReqLvl() <= level && (item->getJobs() & jobBit) != 0;
+        },
+        [](const uint16 itemId)
+        {
+            const auto* item = xi::items::lookup(itemId);
+            return item != nullptr && item->hasFlag(xi::ItemFlag::Rare);
+        });
+
+    const bool done = squadWsLedger_.Apply(
+        plan,
+        [this](const uint16 itemId)
+        {
+            delItemMods(this, itemId);
+        },
+        [this](const uint16 itemId)
+        {
+            addItemMods(this, itemId);
+        });
+
+    if (done)
+    {
+        afterSwap(this);
+    }
+
+    return done;
+}
+
+auto CTrustEntity::RestoreSquadWsSet() -> bool
+{
+    const bool done = squadWsLedger_.Restore(
+        [this](const uint16 itemId)
+        {
+            delItemMods(this, itemId);
+        },
+        [this](const uint16 itemId)
+        {
+            addItemMods(this, itemId);
+        });
+
+    if (done && !isDead())
+    {
+        afterSwap(this);
+    }
+
+    return done;
 }

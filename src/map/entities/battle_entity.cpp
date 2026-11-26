@@ -61,6 +61,7 @@
 #include "utils/battleutils.h"
 #include "utils/charutils.h"
 #include "utils/fishingutils.h"
+#include "utils/itemutils.h"
 #include "utils/messageutils.h"
 #include "utils/mobutils.h"
 #include "utils/mountutils.h"
@@ -3505,8 +3506,22 @@ void CBattleEntity::OnRangedAttack(CRangeState& state, action_t& action)
         CItemWeapon* PEffectAmmo = PAmmo;
         if (!isChar && isSquadMate())
         {
-            PEffectItem = dynamic_cast<CItemWeapon*>(m_Weapons[SLOT_RANGED]);
-            PEffectAmmo = dynamic_cast<CItemWeapon*>(m_Weapons[SLOT_AMMO]);
+            // (2026-11-24, Syfin and Watts: still no Defense Down) m_Weapons only holds the trust's stand-in items, with the
+            // real skill, damage and delay copied in but none of the item's mods, so the add-effect mods were never there.
+            // Use the real items the squad gave the mate (squadEquip, as attack.cpp does for the hit count).
+            PEffectItem = nullptr;
+            PEffectAmmo = nullptr;
+            if (const auto* PTrust = dynamic_cast<const CTrustEntity*>(this))
+            {
+                if (const uint16 rangedId = PTrust->squadEquip(SLOT_RANGED); rangedId != 0)
+                {
+                    PEffectItem = const_cast<CItemWeapon*>(xi::items::lookup<CItemWeapon>(rangedId));
+                }
+                if (const uint16 ammoId = PTrust->squadEquip(SLOT_AMMO); ammoId != 0)
+                {
+                    PEffectAmmo = const_cast<CItemWeapon*>(xi::items::lookup<CItemWeapon>(ammoId));
+                }
+            }
         }
         if (isChar || isSquadMate())
         {

@@ -1313,11 +1313,15 @@ void SpawnPet(CBattleEntity* PMaster, uint32 PetID, bool spawningFromZone)
         PPet->setBattleID(PMaster->getBattleID());
 
         // Squad pets use the normal pet data, but their master is a trust. Let them use their own skill list
-        // (wyvern breaths, jug pet moves, avatar skills); player pets keep the normal command-driven behavior.
+        // (wyvern breaths, jug pet moves); player pets keep the normal command-driven behavior.
+        // XI: Forever Offline (F13, 2026-11-25): not avatars any more. An avatar's own monster skill list (Pet-Garuda:
+        // Predator Claws, Aerial Blast ...) fired at random on TP, without MP, level or Astral Flow: a player's avatar
+        // never does that. A squad Summoner's Blood Pacts are its orders (squad_summoner.lua -> usePetAbility, which does
+        // not depend on this switch), as a player's are; the avatar's melee is unchanged.
         if (PMaster->objtype == TYPE_TRUST)
         {
             if (auto* petController = dynamic_cast<CPetController*>(PPet->PAI->GetController());
-                petController != nullptr && (PPet->getPetType() == PET_TYPE::WYVERN || PPet->getPetType() == PET_TYPE::JUG_PET || PPet->getPetType() == PET_TYPE::AVATAR))
+                petController != nullptr && (PPet->getPetType() == PET_TYPE::WYVERN || PPet->getPetType() == PET_TYPE::JUG_PET))
             {
                 petController->SetWeaponSkillEnabled(true);
             }
@@ -1467,6 +1471,13 @@ void DetachPet(CBattleEntity* PMaster)
         if (PPet->PMaster == PMaster)
         {
             PPet->PMaster = nullptr;
+        }
+
+        // XI: Forever Offline (F13): as for a player below, the avatar's perpetuation stops with the avatar (the mod is
+        // set on the master when an avatar comes out, pets/avatar.lua onPetStatCalculate)
+        if (PPet->objtype == TYPE_PET && static_cast<CPetEntity*>(PPet)->getPetType() == PET_TYPE::AVATAR)
+        {
+            PMaster->setModifier(xi::Mod::AVATAR_PERPETUATION, 0);
         }
 
         return;

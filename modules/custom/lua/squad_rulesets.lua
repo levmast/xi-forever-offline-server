@@ -92,7 +92,77 @@ R.CONDITIONS =
     JA_ON_COOLDOWN = 'ja',
     -- (job expansion) a modifier of the target below a number: { mod = NAME, below = n }, NAME one of R.MODS
     MOD_LT = 'mod',
+    -- (F1, 2026-11-25) the enemy is of a monster family: { family = NAME } (xi.mobFamily: GOBLIN, ORC, QUADAV ...). The enemy is
+    -- the rule's target when that is a monster, else the mate's own enemy, so SELF / PARTY rules can ask: "Goblin -> Barfira".
+    ENEMY_FAMILY = 'family',
+    -- (F2, 2026-11-25) counts, { cmp = AT_LEAST | EXACTLY | AT_MOST | MORE_THAN | FEWER_THAN, count = n, ... }:
+    --   PARTY_COUNT { status = NAME or 'ASLEEP' (Sleep, Sleep II, Lullaby) or nil (everyone) }: living party members within
+    --               20 yalms of the mate, the mate included, e.g. { status = 'ASLEEP', cmp = 'AT_LEAST', count = 2 } -> Curaga
+    --   ENEMY_COUNT { hp_above = 0-99 (default 0), radius = 1-30 yalms around the mate's enemy (default 10) }: the monsters
+    --               fighting the party there (not the ones only standing near), e.g. { hp_above = 30, cmp = 'AT_LEAST', count = 3 }
+    PARTY_COUNT = 'pcount',
+    ENEMY_COUNT = 'ecount',
 }
+
+-- (F2) the comparisons of a count, as the engine numbers them (squad_threat.h CountMatches)
+R.COUNT_CMP = { AT_LEAST = 0, EXACTLY = 1, AT_MOST = 2, MORE_THAN = 3, FEWER_THAN = 4 }
+R.PARTY_COUNT_MAX = 18
+R.ENEMY_COUNT_MAX = 30
+R.ASLEEP_FILTER = 0xFFFE
+
+local function isWholeNumber(value, low, high)
+    return type(value) == 'number' and value == math.floor(value) and value >= low and value <= high
+end
+
+-- (F1/F2) true when xi_map has the community feedback milestone's engine (squad.cpp registers SquadFeedbackEngine)
+function R.engine3Ready()
+    return type(rawget(_G, 'SquadFeedbackEngine')) == 'function'
+end
+
+-- (F1) { family = 'GOBLIN' } -> the family id, or nil
+function R.familyArg(arg)
+    local families = type(xi) == 'table' and rawget(xi, 'mobFamily') or nil
+    if type(arg) ~= 'table' or type(families) ~= 'table' or type(arg.family) ~= 'string' then
+        return nil
+    end
+
+    local id = families[arg.family]
+    return type(id) == 'number' and id or nil
+end
+
+-- (F2) { status = 'ASLEEP', cmp = 'AT_LEAST', count = 2 } -> filter | count << 16 | cmp << 24, or nil
+function R.partyCountArg(arg)
+    if type(arg) ~= 'table' or R.COUNT_CMP[arg.cmp or 'AT_LEAST'] == nil or not isWholeNumber(arg.count, 0, R.PARTY_COUNT_MAX) then
+        return nil
+    end
+
+    local filter = 0
+    if arg.status == 'ASLEEP' then
+        filter = R.ASLEEP_FILTER
+    elseif arg.status ~= nil then
+        local effects = type(xi) == 'table' and rawget(xi, 'effect') or nil
+        filter = type(effects) == 'table' and effects[arg.status] or nil
+        if type(filter) ~= 'number' or filter <= 0 or filter >= R.ASLEEP_FILTER then
+            return nil
+        end
+    end
+
+    return filter + arg.count * 65536 + R.COUNT_CMP[arg.cmp or 'AT_LEAST'] * 16777216
+end
+
+-- (F2) { hp_above = 30, radius = 10, cmp = 'AT_LEAST', count = 3 } -> hp | radius << 8 | count << 16 | cmp << 24, or nil
+function R.enemyCountArg(arg)
+    if type(arg) ~= 'table' or R.COUNT_CMP[arg.cmp or 'AT_LEAST'] == nil or not isWholeNumber(arg.count, 0, R.ENEMY_COUNT_MAX) then
+        return nil
+    end
+
+    local hp, radius = arg.hp_above or 0, arg.radius or 10
+    if not isWholeNumber(hp, 0, 99) or not isWholeNumber(radius, 1, 30) then
+        return nil
+    end
+
+    return hp + radius * 256 + arg.count * 65536 + R.COUNT_CMP[arg.cmp or 'AT_LEAST'] * 16777216
+end
 
 -- (job expansion) the modifiers MOD_LT may name, with the numbers that make sense for "below": Utsusemi shadows and
 -- Blink images (battleutils.cpp IsAbsorbByShadow counts them down in these mods; the Copy Image effect's power does not
@@ -106,6 +176,8 @@ R.MODS = {
 R.ENGINE_NAMES = { HAS_MP = true, HAS_MP_MPP_LT = true, HAS_MP_MPP_GTE = true, JA_ON_COOLDOWN = true, PARTY_LOWEST_HPP = true }
 -- ... and the ones that need the job expansion's map server
 R.ENGINE2_NAMES = { MOD_LT = true }
+-- ... and the ones that need the community feedback milestone's map server (F1, F2)
+R.ENGINE3_NAMES = { ENEMY_FAMILY = true, PARTY_COUNT = true, ENEMY_COUNT = true }
 
 -- true when xi_map has that batch: its squad.cpp registers SquadApplyWeaponSkills (built from the same source)
 function R.engineReady()
@@ -218,6 +290,10 @@ local function conditionProblem(cond)
         return name .. ' needs the updated map server (xi_map, job expansion)'
     end
 
+    if R.ENGINE3_NAMES[name] and not R.engine3Ready() then
+        return name .. ' needs the updated map server (xi_map, enemy family and count conditions)'
+    end
+
     if ai ~= nil and ai.c ~= nil and ai.c[name] == nil then
         return 'unknown condition ' .. name
     end
@@ -316,6 +392,47 @@ local function conditionProblem(cond)
         end
 
         return rangeProblem(name .. ' below', arg.below, range)
+    elseif spec == 'family' then
+        if type(arg) ~= 'table' or not isName(arg.family) then
+            return name .. ' needs { family = NAME } like GOBLIN'
+        end
+
+        if known('mobFamily', arg.family) == false then
+            return 'unknown monster family ' .. arg.family
+        end
+    elseif spec == 'pcount' or spec == 'ecount' then
+        local fields = spec == 'pcount' and { status = true, cmp = true, count = true } or { hp_above = true, radius = true, cmp = true, count = true }
+        if type(arg) ~= 'table' then
+            return name .. ' needs { cmp = AT_LEAST|EXACTLY|AT_MOST|MORE_THAN|FEWER_THAN, count = n, ... }'
+        end
+
+        for key in pairs(arg) do
+            if not fields[key] then
+                return name .. ': unknown field ' .. tostring(key)
+            end
+        end
+
+        if arg.cmp ~= nil and R.COUNT_CMP[arg.cmp] == nil then
+            return name .. ': cmp must be AT_LEAST, EXACTLY, AT_MOST, MORE_THAN or FEWER_THAN'
+        end
+
+        if spec == 'pcount' then
+            if arg.status ~= nil and arg.status ~= 'ASLEEP' then
+                if not isName(arg.status) then
+                    return name .. ': status must be a status effect name like PETRIFICATION, or ASLEEP'
+                end
+
+                if known('effect', arg.status) == false then
+                    return 'unknown status effect ' .. arg.status
+                end
+            end
+
+            return rangeProblem(name .. ' count', arg.count, { 0, R.PARTY_COUNT_MAX })
+        end
+
+        return rangeProblem(name .. ' count', arg.count, { 0, R.ENEMY_COUNT_MAX })
+            or (arg.hp_above ~= nil and rangeProblem(name .. ' hp_above', arg.hp_above, { 0, 99 }))
+            or (arg.radius ~= nil and rangeProblem(name .. ' radius', arg.radius, { 1, 30 })) or nil
     end
 
     return nil
@@ -655,7 +772,8 @@ end
 -- The set chosen for this mate and job: returns set, nil  or  nil, reason  (reason nil = nothing chosen).
 -- The number finds the set; the id check number (when stored) must match, so a reused number is never followed. A set
 -- that only got a new number is still found by its id. A choice without a check number (made before M1.1) uses the number.
-function R.resolve(player, mateId, jobId, store)
+-- quiet: say nothing in the server log (the Squads menu asks this every 15 s; see R.liveStatus)
+function R.resolve(player, mateId, jobId, store, quiet)
     if player == nil or mateId == nil or mateId == 0 or jobId == nil then
         return nil, nil
     end
@@ -681,15 +799,19 @@ function R.resolve(player, mateId, jobId, store)
         end
 
         if #found == 1 then
-            print(string.format('[squad] Rule Sets: mate %d: set %s now has number %d (was %d); following it by its id',
-                mateId, found[1].id, found[1].num, num))
+            if not quiet then
+                print(string.format('[squad] Rule Sets: mate %d: set %s now has number %d (was %d); following it by its id',
+                    mateId, found[1].id, found[1].num, num))
+            end
             return found[1], nil
         end
     end
 
     local reason = (set ~= nil and R.JOB_IDS[set.job] == jobId) and 'replaced' or 'gone'
-    print(string.format('[squad] Rule Sets: mate %d has set %d chosen for job %d, but that set is %s; its job rules are used',
-        mateId, num, jobId, reason == 'replaced' and 'now a different set' or 'not there or not valid'))
+    if not quiet then
+        print(string.format('[squad] Rule Sets: mate %d has set %d chosen for job %d, but that set is %s; its job rules are used',
+            mateId, num, jobId, reason == 'replaced' and 'now a different set' or 'not there or not valid'))
+    end
     return nil, reason
 end
 
@@ -759,6 +881,174 @@ local function tell(master, text)
     end
 end
 
+-- ---------------------------------------------------------------- what a called mate actually runs (live status)
+-- (2026-11-24) The Squads menu shows, per mate, what was really installed when the mate was called, next to what is
+-- chosen now. It is written at the call (R.forMob, and squad.lua for a job Squads has no rules for) as LOCAL vars on the
+-- mate itself: no char var, nothing saved, and it goes away with the mate (dismiss, zoning, Apply now). Nothing in
+-- combat reads it.
+--   SQUAD_RS_MARK  1 once written at this call (0: an older call path, an add-on's mate: "unknown", never "active")
+--   SQUAD_RS_LIVE  the number of the set installed, 0 = job rules
+--   SQUAD_RS_LIVEH / SQUAD_RS_LIVEF  that set's id check number / its rules' check number (an edit after the call)
+--   SQUAD_RS_FB    why job rules: R.LIVE_FB
+--   SQUAD_RS_DROP  rules of the set left out at this call (level, unknown names, abilities of neither job)
+--   SQUAD_RS_SELN / SQUAD_RS_SELH  the choice (SQUAD_RS_ / SQUAD_RSH_ char vars) in force at the call
+--   SQUAD_RS_JOB   the main job at the call;  SQUAD_RS_BEH  the Role and Mode (SQUAD_AI_) at the call
+R.LIVE_FB = { NONE = 0, GONE = 1, REPLACED = 2, UNUSABLE = 3, NOJOB = 4 }
+
+-- A check number of a set's rules (the same in LuaJIT and Lua 5.4): an edited set is noticed as not applied yet
+local function serial(v)
+    if type(v) ~= 'table' then
+        return type(v) == 'string' and string.format('%q', v) or tostring(v)
+    end
+
+    local parts, keys = {}, {}
+    for i = 1, #v do
+        parts[#parts + 1] = serial(v[i])
+    end
+
+    for k in pairs(v) do
+        if not (type(k) == 'number' and k >= 1 and k <= #v and k % 1 == 0) then
+            keys[#keys + 1] = tostring(k)
+        end
+    end
+
+    table.sort(keys)
+    for _, k in ipairs(keys) do
+        local value = v[k]
+        if value == nil then
+            value = v[tonumber(k)]
+        end
+
+        parts[#parts + 1] = k .. '=' .. serial(value)
+    end
+
+    return '{' .. table.concat(parts, ',') .. '}'
+end
+
+function R.fingerprint(set)
+    return R.idHash(serial(type(set) == 'table' and set.rules or {}))
+end
+
+-- Written when a mate is called: set = the set installed (nil = job rules), fb = R.LIVE_FB, dropped = rules left out
+function R.markLive(mob, master, mateId, jobId, set, fb, dropped)
+    if mob == nil or master == nil then
+        return
+    end
+
+    mob:setLocalVar('SQUAD_RS_MARK', 1)
+    mob:setLocalVar('SQUAD_RS_LIVE', set and set.num or 0)
+    mob:setLocalVar('SQUAD_RS_LIVEH', set and R.idHash(set.id) or 0)
+    mob:setLocalVar('SQUAD_RS_LIVEF', set and R.fingerprint(set) or 0)
+    mob:setLocalVar('SQUAD_RS_FB', fb or R.LIVE_FB.NONE)
+    mob:setLocalVar('SQUAD_RS_DROP', dropped or 0)
+    mob:setLocalVar('SQUAD_RS_SELN', tonumber(master:getCharVar(R.varName(mateId, jobId))) or 0)
+    mob:setLocalVar('SQUAD_RS_SELH', tonumber(master:getCharVar(R.hashVarName(mateId, jobId))) or 0)
+    mob:setLocalVar('SQUAD_RS_JOB', jobId or 0)
+    mob:setLocalVar('SQUAD_RS_BEH', tonumber(master:getCharVar('SQUAD_AI_' .. mateId)) or 0)
+end
+
+local function findByHash(store, hash)
+    if hash == 0 then
+        return nil
+    end
+
+    for _, set in ipairs(store.list) do
+        if R.idHash(set.id) == hash then
+            return set
+        end
+    end
+
+    return nil
+end
+
+-- What one squad mate runs now and what is chosen for its next call. mate = squad.lua's mate ({ id, mjob, ... }),
+-- trust = the called mate or nil. Returns a table:
+--   state  'off' (not called) | 'unknown' (called, nothing recorded) | 'addon' (an add-on owns it) |
+--          'set' (the chosen set is running) | 'job' (job rules, none chosen) | 'fallback' (job rules: the chosen set
+--          could not be used) | 'pending' (what runs differs from what is chosen: Apply now)
+--   why    for 'pending': 'job' (main job changed), 'choice' (another set or none chosen), 'edited' (the set was
+--          changed since), 'gone' (the running set is no longer saved), 'role' (Role/Mode changed; job rules only)
+--   live / liveName, sel / selName, fb, dropped, liveJob
+function R.liveStatus(player, mate, trust, store)
+    store = store or R.load()
+    local s = { state = 'off', why = '-', live = 0, liveName = '-', sel = 0, selName = '-', fb = 0, dropped = 0, liveJob = 0 }
+    local selSet, selReason = R.resolve(player, mate.id, mate.mjob, store, true)
+    s.sel = R.selectedNum(player, mate.id, mate.mjob)
+    if selSet then
+        s.sel, s.selName = selSet.num, selSet.name
+    elseif selReason ~= nil then
+        s.selName = '?' -- chosen, but no longer usable: the next call uses the job rules
+    end
+
+    if trust == nil then
+        return s
+    end
+
+    if trust:getLocalVar('ADDON_OWNED') == 1 then
+        s.state = 'addon'
+        return s
+    end
+
+    if trust:getLocalVar('SQUAD_RS_MARK') ~= 1 then
+        s.state = 'unknown'
+        return s
+    end
+
+    s.live, s.fb, s.dropped, s.liveJob = trust:getLocalVar('SQUAD_RS_LIVE'), trust:getLocalVar('SQUAD_RS_FB'),
+        trust:getLocalVar('SQUAD_RS_DROP'), trust:getLocalVar('SQUAD_RS_JOB')
+    local liveSet = nil
+    if s.live > 0 then
+        liveSet = findByHash(store, trust:getLocalVar('SQUAD_RS_LIVEH'))
+        s.liveName = liveSet and liveSet.name or '?'
+    end
+
+    local pending = nil
+    if s.liveJob ~= mate.mjob then
+        pending = 'job'
+    elseif R.selectedNum(player, mate.id, mate.mjob) ~= trust:getLocalVar('SQUAD_RS_SELN')
+        or (tonumber(player:getCharVar(R.hashVarName(mate.id, mate.mjob))) or 0) ~= trust:getLocalVar('SQUAD_RS_SELH') then
+        pending = 'choice'
+    elseif s.live > 0 and liveSet == nil then
+        pending = 'gone'
+    elseif s.live > 0 and R.fingerprint(liveSet) ~= trust:getLocalVar('SQUAD_RS_LIVEF') then
+        pending = 'edited'
+    elseif s.live > 0 and selSet ~= nil and R.idHash(selSet.id) ~= trust:getLocalVar('SQUAD_RS_LIVEH') then
+        pending = 'choice' -- (the same number now names another set: followed by its id at the next call)
+    elseif s.live == 0 and (s.fb == R.LIVE_FB.GONE or s.fb == R.LIVE_FB.REPLACED) and selSet ~= nil then
+        pending = 'choice' -- (the chosen set could not be found at the call, and now it can)
+    elseif s.live == 0 and s.fb == R.LIVE_FB.NONE and selSet == nil
+        and (tonumber(player:getCharVar('SQUAD_AI_' .. mate.id)) or 0) ~= trust:getLocalVar('SQUAD_RS_BEH') then
+        pending = 'role'
+    end
+
+    if pending then
+        s.state, s.why = 'pending', pending
+    elseif s.live > 0 then
+        s.state = 'set'
+    elseif s.fb ~= R.LIVE_FB.NONE then
+        s.state = 'fallback'
+    else
+        s.state = 'job'
+    end
+
+    return s
+end
+
+-- The Squads menu line (servermenu 1.26n): rs|<slot>|<state>|<why>|<live num>|<live name>|<chosen num>|<chosen name>|
+-- <fallback reason>|<rules left out>|<job at the call>. Names lose | { } % and are cut to 40 characters. An older menu
+-- ignores the line.
+function R.panelLine(player, mate, trust, store, jobName)
+    local s = R.liveStatus(player, mate, trust, store)
+    local function clean(text)
+        local out = string.gsub(tostring(text or '-'), '[|{}%%\r\n]', '/')
+        out = string.sub(out, 1, 40)
+        return out ~= '' and out or '-'
+    end
+
+    return string.format('rs|%d|%s|%s|%d|%s|%d|%s|%d|%d|%s', mate.slot, s.state, s.why, s.live, clean(s.liveName), s.sel,
+        clean(s.selName), s.fb, s.dropped, s.liveJob ~= 0 and clean(jobName and jobName(s.liveJob) or R.jobName(s.liveJob)) or '-'), s
+end
+
 -- squad.lua calls this while a mate spawns. Returns the set to apply (with only the usable rules) or nil for the
 -- mate's normal job rules.
 function R.forMob(mob)
@@ -776,6 +1066,8 @@ function R.forMob(mob)
                 R.jobName(jobId), reason == 'replaced' and 'now a different set' or 'no longer usable'))
         end
 
+        R.markLive(mob, master, mateId, jobId, nil, reason == 'replaced' and R.LIVE_FB.REPLACED
+            or (reason ~= nil and R.LIVE_FB.GONE or R.LIVE_FB.NONE), 0)
         return nil
     end
 
@@ -791,9 +1083,11 @@ function R.forMob(mob)
         print(string.format('[squad] Rule Sets: mate %d, set %s has no rule it can use; its job rules are used', mateId, set.id))
         tell(master, string.format('Squad: Rule Set %d (%s) has no rule your %s squad mate can use at level %d, so it uses its job rules.',
             set.num, set.name, R.jobName(jobId), m.level))
+        R.markLive(mob, master, mateId, jobId, nil, R.LIVE_FB.UNUSABLE, #dropped)
         return nil
     end
 
+    R.markLive(mob, master, mateId, jobId, set, R.LIVE_FB.NONE, #dropped)
     if #dropped == 0 then
         return set
     end

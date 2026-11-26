@@ -74,7 +74,12 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 10    -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
+local VERSION      = 11    -- 11 (community feedback milestone, 2026-11-25): ENEMY_FAMILY "FAMILY", PARTY_COUNT
+                           --   "CMP.n[.STATUS]", ENEMY_COUNT "CMP.n[.hp[.radius]]" (G.decodeCount); offered in catm "jmf"
+                           --   as kinds y, p, q; saving them needs the map server that has them (R.engine3Ready)
+                           -- 10 (UI milestone): hello carries capability words (G.caps), mates carries the live Rule
+                           --   Set state of each mate (fields 13-17). Older editors ignore both.
+                           -- 2: x; 3: spells, ranged/nuke/burst, level and id, 140-byte replies; 4: mates sub level, catm;
                            -- 5: weapon skill settings (wsg, wsl, wss, wsa), catm "j", PARTY_LOWEST_HPP, HAS_MP*
                            -- 6 (job expansion): MOD_LT ("m", argument MODIFIER.number), TRIGGER_SELF_ACTION_TARGET, more
                            --   families, abilities and spells of content this server has not enabled are left out
@@ -162,6 +167,100 @@ local unpackList = unpack or table.unpack -- (LuaJIT / Lua 5.4)
 local function rulesets()
     local ok, R = pcall(require, 'modules/custom/lua/squad_rulesets')
     return ok and type(R) == 'table' and R or nil
+end
+
+-- (version 11, F1/F2) the wire form of the enemy family and count conditions' values:
+--   ENEMY_FAMILY  "GOBLIN"                     <-> { family = 'GOBLIN' }
+--   PARTY_COUNT   "AT_LEAST.2" / "AT_LEAST.2.ASLEEP"   <-> { cmp = 'AT_LEAST', count = 2, status = 'ASLEEP' }
+--   ENEMY_COUNT   "AT_LEAST.3" / "AT_LEAST.3.30" / "AT_LEAST.3.30.10"  <-> { cmp, count, hp_above = 30, radius = 10 }
+-- decodeCount returns nil for any other condition (the value is then left as it is), and the raw text for a value it
+-- cannot read (the Rule Set check then refuses it with a clear reason).
+function G.decodeCount(name, raw)
+    if type(raw) ~= 'string' and type(raw) ~= 'number' then
+        return nil
+    end
+
+    raw = tostring(raw)
+    if name == 'ENEMY_FAMILY' then
+        return string.match(raw, '^[A-Z][A-Z0-9_]*$') and { family = raw } or raw
+    elseif name == 'PARTY_COUNT' then
+        local cmp, n, status = string.match(raw, '^([A-Z_]+)%.(%d+)%.?([A-Z0-9_]*)$')
+        if cmp == nil then
+            return raw
+        end
+
+        return { cmp = cmp, count = tonumber(n), status = status ~= '' and status or nil }
+    elseif name == 'ENEMY_COUNT' then
+        local cmp, n, rest = string.match(raw, '^([A-Z_]+)%.(%d+)(.*)$')
+        if cmp == nil then
+            return raw
+        end
+
+        local hp, radius = string.match(rest, '^%.(%d+)%.(%d+)$')
+        if hp == nil then
+            hp = string.match(rest, '^%.(%d+)$')
+            if hp == nil and rest ~= '' then
+                return raw
+            end
+        end
+
+        return { cmp = cmp, count = tonumber(n), hp_above = hp and tonumber(hp) or nil, radius = radius and tonumber(radius) or nil }
+    end
+
+    return nil
+end
+
+-- the other way: a table value of those conditions -> its text, or nil when it holds anything else
+function G.encodeCount(v)
+    local function word(x)
+        return type(x) == 'string' and string.match(x, '^[A-Z][A-Z0-9_]*$') ~= nil
+    end
+
+    local function whole(x)
+        return type(x) == 'number' and x == math.floor(x) and x >= 0 and x < 1000
+    end
+
+    if v.family ~= nil then
+        for key in pairs(v) do
+            if key ~= 'family' then
+                return nil
+            end
+        end
+
+        return word(v.family) and v.family or nil
+    end
+
+    local allowed = { cmp = true, count = true, status = true, hp_above = true, radius = true }
+    for key in pairs(v) do
+        if not allowed[key] then
+            return nil
+        end
+    end
+
+    if not whole(v.count) or (v.cmp ~= nil and not word(v.cmp)) then
+        return nil
+    end
+
+    local head = string.format('%s.%d', v.cmp or 'AT_LEAST', v.count)
+    if v.status ~= nil then
+        if not word(v.status) or v.hp_above ~= nil or v.radius ~= nil then
+            return nil
+        end
+
+        return head .. '.' .. v.status
+    end
+
+    if v.radius ~= nil then
+        if not whole(v.radius) or (v.hp_above ~= nil and not whole(v.hp_above)) then
+            return nil
+        end
+
+        return string.format('%s.%d.%d', head, v.hp_above or 0, v.radius)
+    elseif v.hp_above ~= nil then
+        return whole(v.hp_above) and string.format('%s.%d', head, v.hp_above) or nil
+    end
+
+    return head
 end
 
 local function store()
@@ -395,6 +494,15 @@ function G.decodeRule(text, index)
 
     -- (version 6, job expansion) MOD_LT carries "MODIFIER.number" ({ mod = 'UTSUSEMI', below = 2 })
     -- (version 8, Bard song tiers) STATUS / NOT_STATUS carry "EFFECT.tier" ({ effect = 'MARCH', tier = 2 })
+    -- (version 11, F1/F2) ENEMY_FAMILY carries "FAMILY" ({ family = 'GOBLIN' }); PARTY_COUNT "CMP.n[.STATUS]"
+    -- ({ cmp, count, status }); ENEMY_COUNT "CMP.n[.hp[.radius]]" ({ cmp, count, hp_above, radius })
+    for _, c in ipairs({ rule.cond, rule.cond2 }) do
+        local decoded = c and G.decodeCount(c[1], c[2]) or nil
+        if decoded ~= nil then
+            c[2] = decoded
+        end
+    end
+
     for _, c in ipairs({ rule.cond, rule.cond2 }) do
         if c and c[1] == 'MOD_LT' and type(c[2]) == 'string' then
             local mod, below = string.match(c[2], '^([A-Z][A-Z0-9_]*)%.(%d+)$')
@@ -464,6 +572,8 @@ function G.encodeRule(rule, index)
             end
 
             return string.format('%s.%d', v.mod, v.below)
+        elseif type(v) == 'table' and (v.family ~= nil or v.cmp ~= nil or v.count ~= nil) then
+            return G.encodeCount(v) -- (version 11) ENEMY_FAMILY / PARTY_COUNT / ENEMY_COUNT; nil = not carried
         elseif type(v) == 'table' and word(v.effect) and whole(v.tier) and v.tier >= 1 then
             -- (version 8) { effect = 'MARCH', tier = 2 } -> "MARCH.2" (STATUS / NOT_STATUS); any other key: not carried
             for key in pairs(v) do
@@ -771,14 +881,48 @@ requests.ping = function(player, w)
     G.reply(player, w[2], 'pong', w[3] or '-', G.now())
 end
 
+-- (version 10) what this server can do beyond the protocol number, as words in one field of the hello answer:
+--   live      the mates answer carries what each mate really runs (squad_rulesets.lua R.liveStatus)
+--   reapply1  squad.lua has "!squad reapply <slot>" (one mate) and the map server can send one mate off
+-- A client uses a newer form only after it has read its word here. '-' = none.
+function G.caps()
+    local R = rulesets()
+    local words = {}
+    if R ~= nil and type(R.liveStatus) == 'function' then
+        words[#words + 1] = 'live'
+    end
+
+    if type(xi) == 'table' and type(rawget(xi, 'squad')) == 'table' and rawget(xi.squad, 'reapplySlot') == true
+        and rawget(_G, 'SquadDismissMate') ~= nil then
+        words[#words + 1] = 'reapply1'
+    end
+
+    -- (F13) smn: the Summoner section (smg, sms, smr, smd, smm, smp); (F12) wsset: the WS gear set (wxg, wxs, wxc, wxl)
+    local okS, Smn = pcall(require, 'modules/custom/lua/squad_summoner')
+    if okS and type(Smn) == 'table' and type(Smn.getRules) == 'function' then
+        words[#words + 1] = 'smn'
+        if type(Smn.replaceAll) == 'function' then
+            words[#words + 1] = 'smn1' -- (a starter saved as one change: smb / smbs / smbr / smbc / smba)
+        end
+    end
+
+    local okX, Wx = pcall(require, 'modules/custom/lua/squad_wsset')
+    if okX and type(Wx) == 'table' and Wx.engineReady() then
+        words[#words + 1] = 'wsset'
+    end
+
+    return #words > 0 and table.concat(words, ',') or '-'
+end
+
 requests.hello = function(player, w)
     local R = rulesets()
-    G.reply(player, w[2], 'hello', VERSION, R and R.MAX_RULES or 32, MAX_LINE, MAX_CHUNKS)
+    G.reply(player, w[2], 'hello', VERSION, R and R.MAX_RULES or 32, MAX_LINE, MAX_CHUNKS, G.caps())
 end
 
 requests.mates = function(player, w)
     local R = rulesets()
     local count = 0
+    local liveStore = nil -- (the Rule Set store, read once for this answer)
     for _, mate in ipairs(squadOf(player)) do
         local level = mate.jobs and mate.jobs[mate.mjob] and mate.jobs[mate.mjob].level or 1
         local subName, subLevel = mate.sjob ~= 0 and jobName(mate.sjob) or '-', '-'
@@ -788,8 +932,25 @@ requests.mates = function(player, w)
         end
 
         local chosen = R and R.selectedNum(player, mate.id, mate.mjob) or 0
-        G.reply(player, w[2], 'mate', mate.slot, mate.id, mate.name, jobName(mate.mjob), level,
-            subName, chosen, mateOut(player, mate.id) and 1 or 0, subLevel)
+        local trust = mateOut(player, mate.id)
+        -- (version 10, capability "live") what this mate really runs, by the same rules as the Squads menu's Rules line:
+        -- state | why | number of the set running (0 = job rules) | fallback reason | rules left out. Fields 13-17; an
+        -- older editor reads fields by position up to 12 and ignores them.
+        local live = nil
+        if R ~= nil and type(R.liveStatus) == 'function' then
+            liveStore = liveStore or R.load()
+            local okLive, s = pcall(R.liveStatus, player, mate, trust, liveStore)
+            live = okLive and type(s) == 'table' and s or nil
+        end
+
+        if live then
+            G.reply(player, w[2], 'mate', mate.slot, mate.id, mate.name, jobName(mate.mjob), level,
+                subName, chosen, trust and 1 or 0, subLevel, live.state, live.why, live.live, live.fb, live.dropped)
+        else
+            G.reply(player, w[2], 'mate', mate.slot, mate.id, mate.name, jobName(mate.mjob), level,
+                subName, chosen, trust and 1 or 0, subLevel)
+        end
+
         count = count + 1
     end
 
@@ -857,12 +1018,15 @@ end
 -- (catm "j", version 5). Names that need the batch's map server (R.ENGINE_NAMES) only when it is there.
 -- (version 6) withMod: the addon reads modifier arguments (catm "jm"); an older addon's check refuses a whole catalog
 -- with an entry kind it does not know, so MOD_LT is only sent when asked for
-local function baseLists(R, withJa, withMod)
+-- (version 11) withCount: the addon reads the enemy family (y) and count (p, q) arguments (catm "jmf")
+local function baseLists(R, withJa, withMod, withCount)
     local engineOk = R.engineReady == nil or R.engineReady()
     local engine2Ok = R.engine2Ready == nil or R.engine2Ready()
+    local engine3Ok = R.engine3Ready == nil or R.engine3Ready()
     local function offered(name)
         return (engineOk or not (R.ENGINE_NAMES and R.ENGINE_NAMES[name]))
             and (engine2Ok or not (R.ENGINE2_NAMES and R.ENGINE2_NAMES[name]))
+            and (engine3Ok or not (R.ENGINE3_NAMES and R.ENGINE3_NAMES[name]))
     end
 
     local lists = {}
@@ -891,6 +1055,11 @@ local function baseLists(R, withJa, withMod)
         elseif spec == 'mod' then
             if withMod then
                 lists.c[#lists.c + 1] = name .. ':m' -- (version 6: the addon knows the modifiers and their ranges, R.MODS)
+            end
+        elseif spec == 'family' or spec == 'pcount' or spec == 'ecount' then
+            if withCount then
+                -- (version 11, F1/F2) y = a monster family name (xi.mobFamily), p = a party count, q = an enemy count
+                lists.c[#lists.c + 1] = name .. ':' .. ({ family = 'y', pcount = 'p', ecount = 'q' })[spec]
             end
         elseif type(spec) == 'table' then
             lists.c[#lists.c + 1] = string.format('%s:r:%d:%d', name, spec[1], spec[2])
@@ -1150,9 +1319,9 @@ requests.catm = function(player, w)
         return
     end
 
-    -- "j" (version 5) / "jm" (version 6): which argument kinds the addon reads
+    -- "j" (version 5) / "jm" (version 6) / "jmf" (version 11): which argument kinds the addon reads
     local flags = w[4] or ''
-    local lists = baseLists(R, flags == 'j' or flags == 'jm', flags == 'jm')
+    local lists = baseLists(R, flags == 'j' or flags == 'jm' or flags == 'jmf', flags == 'jm' or flags == 'jmf', flags == 'jmf')
     lists.j = G.mateAbilities(player, mate.mjob, main, sub, subLevel)
     lists.s, lists.u = G.mateSpells(player, mate.mjob, main, sub, subLevel)
     replyCatalog(player, w[2], lists, CATM_KINDS)
@@ -1359,6 +1528,449 @@ requests.wsa = function(player, w)
 
     W.liveApply(player, mate, trust)
     replyWs(player, w[2], W, mate)
+end
+
+-- ---------------------------------------------------------------- (F13, capability "smn") the Summoner section
+-- smg <n> <slot>      -> GSQ|n|smn|slot|JOB|avatar|engage|rage|ward|between|idle|rswitch|out|cur|intent|mp|maxmp|eng
+--                        avatar 0 Auto, 1-8 (squad_summoner.lua S.AVATARS), 9 Keep; engage/idle/rswitch 1/0; rage/ward
+--                        0 Auto, 1 Off, 2 Rules only; between 0 keep out, 1 release, 2 release when MP is low; cur =
+--                        the avatar out now or -, intent = the pact it is on its way to or -; eng 1/0 = this map server
+--                        charges perpetuation; then GSQ|n|smr|i|on|PACT|TARGET|COND|ARG|WHEN|protect per rule;
+--                        GSQ|n|end|<rules + 1> (every line counted)
+-- sms <n> <slot> <avatar> <engage> <rage> <ward> <between> <idle> <rswitch>  -> the smg answer
+-- smr <n> <slot> <i> <on> <PACT> <TARGET> <COND> <ARG> <WHEN> <protect>     -> set rule i (1 .. count + 1): smg answer
+-- smd <n> <slot> <i>  /  smm <n> <slot> <i> <-1|1>                           -> delete / move rule i: the smg answer
+-- smp <n> <slot>      -> GSQ|n|smp|NAME:AVATAR:LEVEL:KIND:AIM:EFFECT:usable,... (lines), GSQ|n|end|lines|count
+local function summoner()
+    local ok, Smn = pcall(require, 'modules/custom/lua/squad_summoner')
+    return ok and type(Smn) == 'table' and type(Smn.getRules) == 'function' and Smn or nil
+end
+
+local function smnMate(player, w)
+    local Smn, mate = summoner(), mateInSlot(player, w[3])
+    if Smn == nil then
+        G.reply(player, w[2], 'err', 'server', 'the Summoner file is missing on the server')
+    elseif mate == nil then
+        G.reply(player, w[2], 'err', 'missing', 'no squad mate in that slot')
+    elseif mate.mjob ~= ((xi.job and xi.job.SMN) or 15) then
+        G.reply(player, w[2], 'err', 'notsmn', mate.name .. ' is not a Summoner')
+    else
+        return Smn, mate
+    end
+
+    return nil, nil
+end
+
+local function replySmn(player, id, Smn, mate)
+    local s = Smn.getSettings(player, mate.id)
+    local trust = mateOut(player, mate.id)
+    local live = trust and Smn.live(trust) or nil
+    G.reply(player, id, 'smn', mate.slot, jobName(mate.mjob), player:getCharVar(Smn.choiceVar(mate.id)), s.engage and 1 or 0,
+        s.rage, s.ward, s.between, s.idle and 1 or 0, s.ruleSwitch and 1 or 0, trust and 1 or 0,
+        live and live.avatar or '-', live and (live.intent or live.sent) or '-', live and live.mp or '-', live and live.maxmp or '-',
+        Smn.engineReady() and 1 or 0)
+    local rules = Smn.getRules(player, mate.id)
+    for i, r in ipairs(rules) do
+        G.reply(player, id, 'smr', i, r.on and 1 or 0, r.pact, r.target, r.cond, tostring(r.arg), r.when, r.protect and 1 or 0)
+    end
+
+    G.reply(player, id, 'end', #rules + 1) -- (the smn line and the rule lines: the editor counts every line)
+end
+
+requests.smg = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn then
+        replySmn(player, w[2], Smn, mate)
+    end
+end
+
+requests.sms = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn == nil then
+        return
+    end
+
+    local avatar = tonumber(w[4] or '')
+    if avatar == nil or avatar < 0 or avatar > Smn.KEEP or avatar ~= math.floor(avatar) then
+        G.reply(player, w[2], 'err', 'badreq', 'the avatar must be 0-9')
+        return
+    end
+
+    local ok, why = Smn.setSettings(player, mate.id, { engage = w[5] ~= '0', rage = tonumber(w[6] or ''), ward = tonumber(w[7] or ''),
+        between = tonumber(w[8] or ''), idle = w[9] == '1', ruleSwitch = w[10] ~= '0' })
+    if not ok then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    -- the Gambits avatar setting is a setting, not an order: no manual hold (an out mate takes it at once, unless it is
+    -- already out; S.setChoice checks eligibility and the cost before it releases anything)
+    local trust = mateOut(player, mate.id)
+    local has = xi.squad and xi.squad.avatarHas and xi.squad.avatarHas(player) or nil
+    Smn.setChoice(player, mate.id, mate.name, avatar ~= 0 and avatar or nil, avatar ~= Smn.KEEP and trust or nil, has, false)
+    replySmn(player, w[2], Smn, mate)
+end
+
+requests.smr = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn == nil then
+        return
+    end
+
+    local n = tonumber(w[4] or '')
+    local arg = w[9]
+    if arg ~= nil and string.match(arg, '^%d+$') then
+        arg = tonumber(arg)
+    end
+
+    local ok, why = Smn.setRule(player, mate.id, n, { on = w[5] ~= '0', pact = w[6], target = w[7], cond = w[8], arg = arg,
+        when = w[10], protect = w[11] == '1' })
+    if not ok then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    replySmn(player, w[2], Smn, mate)
+end
+
+requests.smd = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn == nil then
+        return
+    end
+
+    local ok, why = Smn.deleteRule(player, mate.id, tonumber(w[4] or '') or 0)
+    if not ok then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    replySmn(player, w[2], Smn, mate)
+end
+
+requests.smm = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn == nil then
+        return
+    end
+
+    local dir = tonumber(w[5] or '')
+    local ok, why = Smn.moveRule(player, mate.id, tonumber(w[4] or '') or 0, (dir == -1 or dir == 1) and dir or 0)
+    if not ok then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    replySmn(player, w[2], Smn, mate)
+end
+
+requests.smp = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn == nil then
+        return
+    end
+
+    local okL, level = G.levels(mate, player)
+    local has = xi.squad and xi.squad.avatarHas and xi.squad.avatarHas(player) or nil
+    local list = Smn.catalog(okL and level or 1, has)
+    local lines, line, size = 0, {}, 0
+    local budget = REPLY_MAX - #string.format('GSQ|%s|smp|', w[2])
+    for _, e in ipairs(list) do
+        local entry = string.format('%s:%s:%d:%s:%s:%s:%d', e.name, e.avatar, e.level, e.kind, e.aim, e.effect or '-', e.usable and 1 or 0)
+        local add = #entry + (#line > 0 and 1 or 0)
+        if #line > 0 and size + add > budget then
+            G.reply(player, w[2], 'smp', table.concat(line, ','))
+            lines, line, size = lines + 1, {}, 0
+            add = #entry
+        end
+
+        line[#line + 1] = entry
+        size = size + add
+    end
+
+    if #line > 0 then
+        G.reply(player, w[2], 'smp', table.concat(line, ','))
+        lines = lines + 1
+    end
+
+    G.reply(player, w[2], 'end', lines, #list)
+end
+
+-- (F13) a starter saved as ONE change: nothing is written until the commit, and the commit checks everything first, so a
+-- refused part leaves the mate's settings and pact rules exactly as they were (no partial replacement).
+-- smb  <n> <slot>                                   -> begin (drops an older unfinished one): GSQ|n|smb|slot|begun, end|1
+-- smbs <n> <slot> <avatar> <engage> <rage> <ward> <between> <idle> <rswitch>  -> staged: GSQ|n|smb|slot|settings, end|1
+-- smbr <n> <slot> <i> <on> <PACT> <TARGET> <COND> <ARG> <WHEN> <protect>     -> staged: GSQ|n|smb|slot|rule|i, end|1
+-- smbc <n> <slot> <rules>                            -> commit (all checked, then written): the smg answer
+-- smba <n> <slot>                                    -> drop it: GSQ|n|smb|slot|dropped, end|1
+-- Each staged part is checked when it arrives (a bad one is refused at once); an unfinished one expires after 120 s.
+local staged = {}
+local STAGE_SECS = 120
+
+local function stageOf(player, w, Smn, mate)
+    local st = staged[player:getID()]
+    if st == nil or st.slot ~= mate.slot or os.time() > st.at + STAGE_SECS then
+        staged[player:getID()] = nil
+        G.reply(player, w[2], 'err', 'nostage', 'no starter save is open for that mate (begin again)')
+        return nil
+    end
+
+    return st
+end
+
+requests.smb = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn then
+        staged[player:getID()] = { slot = mate.slot, at = os.time(), rules = {} }
+        G.reply(player, w[2], 'smb', mate.slot, 'begun')
+        G.reply(player, w[2], 'end', 1)
+    end
+end
+
+requests.smbs = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    local st = Smn and stageOf(player, w, Smn, mate)
+    if st == nil then
+        return
+    end
+
+    local avatar = tonumber(w[4] or '')
+    local s = { engage = w[5] ~= '0', rage = tonumber(w[6] or ''), ward = tonumber(w[7] or ''), between = tonumber(w[8] or ''),
+                idle = w[9] == '1', ruleSwitch = w[10] ~= '0' }
+    local packed, why = Smn.packSettings(s)
+    if avatar == nil or avatar < 0 or avatar > Smn.KEEP or avatar ~= math.floor(avatar) then
+        packed, why = nil, 'the avatar must be 0-9'
+    end
+
+    if packed == nil then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    st.settings, st.avatar = s, avatar
+    G.reply(player, w[2], 'smb', mate.slot, 'settings')
+    G.reply(player, w[2], 'end', 1)
+end
+
+requests.smbr = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    local st = Smn and stageOf(player, w, Smn, mate)
+    if st == nil then
+        return
+    end
+
+    local n = tonumber(w[4] or '')
+    local arg = w[9]
+    if arg ~= nil and string.match(arg, '^%d+$') then
+        arg = tonumber(arg)
+    end
+
+    local rule = { on = w[5] ~= '0', pact = w[6], target = w[7], cond = w[8], arg = arg, when = w[10], protect = w[11] == '1' }
+    local v, why = Smn.encodeRule(rule)
+    if n == nil or n < 1 or n > Smn.MAX_RULES or n ~= math.floor(n) then
+        v, why = nil, 'rule number 1-' .. Smn.MAX_RULES
+    end
+
+    if v == nil then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    st.rules[n] = rule
+    G.reply(player, w[2], 'smb', mate.slot, 'rule', n)
+    G.reply(player, w[2], 'end', 1)
+end
+
+requests.smbc = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    local st = Smn and stageOf(player, w, Smn, mate)
+    if st == nil then
+        return
+    end
+
+    local count = tonumber(w[4] or '')
+    local list = {}
+    for i = 1, count or 0 do
+        list[i] = st.rules[i]
+    end
+
+    local why = nil
+    if st.settings == nil then
+        why = 'the settings were not sent'
+    elseif count == nil or #list ~= count then
+        why = 'a rule of the starter is missing'
+    end
+
+    local ok = false
+    if why == nil then
+        ok, why = Smn.replaceAll(player, mate.id, st.settings, list)
+    end
+
+    staged[player:getID()] = nil
+    if not ok then
+        G.reply(player, w[2], 'err', 'badreq', 'nothing changed: ' .. tostring(why))
+        return
+    end
+
+    local trust = mateOut(player, mate.id)
+    local has = xi.squad and xi.squad.avatarHas and xi.squad.avatarHas(player) or nil
+    Smn.setChoice(player, mate.id, mate.name, st.avatar ~= 0 and st.avatar or nil, st.avatar ~= Smn.KEEP and trust or nil, has, false)
+    replySmn(player, w[2], Smn, mate)
+end
+
+requests.smba = function(player, w)
+    local Smn, mate = smnMate(player, w)
+    if Smn then
+        staged[player:getID()] = nil
+        G.reply(player, w[2], 'smb', mate.slot, 'dropped')
+        G.reply(player, w[2], 'end', 1)
+    end
+end
+
+-- ---------------------------------------------------------------- (F12, capability "wsset") the WS gear set
+-- wxg <n> <slot>                 -> GSQ|n|wx|slot|JOB|pieces|out|eng|active, then GSQ|n|wxp|eqslot|itemId|ok|name|why per
+--                                   stored piece (ok 1 = it passes for the mate now; why = the reason it is left out),
+--                                   GSQ|n|end|<pieces + 1> (every line counted)
+-- wxs <n> <slot> <eqslot> <item> -> stores one piece (item 0 = none; eqslot 4-15) for the mate's main job: the wxg answer
+-- wxc <n> <slot>                 -> clears the set: the wxg answer
+-- wxl <n> <slot> <eqslot>        -> GSQ|n|wxl|id:level:Name,... (lines), GSQ|n|end|lines|count: what may go in that slot
+local function wsSet()
+    local ok, Wx = pcall(require, 'modules/custom/lua/squad_wsset')
+    return ok and type(Wx) == 'table' and Wx or nil
+end
+
+local function wxMate(player, w)
+    local Wx, mate = wsSet(), mateInSlot(player, w[3])
+    if Wx == nil then
+        G.reply(player, w[2], 'err', 'server', 'the WS gear set file is missing on the server')
+    elseif mate == nil then
+        G.reply(player, w[2], 'err', 'missing', 'no squad mate in that slot')
+    else
+        return Wx, mate
+    end
+
+    return nil, nil
+end
+
+local function itemName(itemId)
+    local ok, info = pcall(function() return GetSquadItemInfo(itemId) end)
+    return G.wsWireName(ok and type(info) == 'table' and info.name or tostring(itemId))
+end
+
+local function replyWx(player, id, Wx, mate)
+    local trust = mateOut(player, mate.id)
+    local job = trust and trust:getMainJob() or mate.mjob
+    local set = Wx.get(player, mate.id, job)
+    local okL, level = G.levels(mate, player)
+    local outfit = mate.equip and mate.equip[job] or {}
+    local liveLevel = trust and trust:getMainLvl() or (okL and level or 1)
+    local _, problems = Wx.check(player, job, set, outfit, liveLevel)
+    local active = false
+    if trust and type(rawget(_G, 'SquadWsSetInfo')) == 'function' then
+        local okI, info = pcall(SquadWsSetInfo, trust)
+        active = okI and type(info) == 'table' and info.active == true
+    end
+
+    G.reply(player, id, 'wx', mate.slot, jobName(job), Wx.count(set), trust and 1 or 0, Wx.engineReady() and 1 or 0, active and 1 or 0)
+    local n = 0
+    for slot = Wx.FIRST_SLOT, Wx.LAST_SLOT do
+        if set[slot] then
+            local why = problems[slot]
+            local text = why and string.sub((string.gsub(why, '|', ' ')), 1, 56) or '-'
+            G.reply(player, id, 'wxp', slot, set[slot], why and 0 or 1, string.sub(itemName(set[slot]), 1, 24), text)
+            n = n + 1
+        end
+    end
+
+    G.reply(player, id, 'end', n + 1) -- (the wx line and the piece lines: the editor counts every line)
+end
+
+requests.wxg = function(player, w)
+    local Wx, mate = wxMate(player, w)
+    if Wx then
+        replyWx(player, w[2], Wx, mate)
+    end
+end
+
+requests.wxs = function(player, w)
+    local Wx, mate = wxMate(player, w)
+    if Wx == nil then
+        return
+    end
+
+    local slot, itemId = tonumber(w[4] or ''), tonumber(w[5] or '')
+    if slot == nil or itemId == nil or itemId < 0 or itemId > 65535 then
+        G.reply(player, w[2], 'err', 'badreq', 'wxs needs an equipment slot and an item id')
+        return
+    end
+
+    local trust = mateOut(player, mate.id)
+    local job = trust and trust:getMainJob() or mate.mjob
+    local okL, level = G.levels(mate, player)
+    local ok, why = Wx.setPiece(player, mate, job, slot, itemId, okL and level or 1)
+    if not ok then
+        G.reply(player, w[2], 'err', 'badreq', why)
+        return
+    end
+
+    if trust then
+        Wx.liveApply(player, mate, trust) -- (in use at once: no new call)
+    end
+
+    replyWx(player, w[2], Wx, mate)
+end
+
+requests.wxc = function(player, w)
+    local Wx, mate = wxMate(player, w)
+    if Wx == nil then
+        return
+    end
+
+    local trust = mateOut(player, mate.id)
+    Wx.clear(player, mate.id, trust and trust:getMainJob() or mate.mjob)
+    if trust then
+        Wx.liveApply(player, mate, trust)
+    end
+
+    replyWx(player, w[2], Wx, mate)
+end
+
+requests.wxl = function(player, w)
+    local Wx, mate = wxMate(player, w)
+    if Wx == nil then
+        return
+    end
+
+    local slot = tonumber(w[4] or '')
+    if not Wx.isSetSlot(slot) then
+        G.reply(player, w[2], 'err', 'badreq', 'only the slots 4-15 (head to back)')
+        return
+    end
+
+    local trust = mateOut(player, mate.id)
+    local okL, level = G.levels(mate, player)
+    local list = Wx.choices(player, trust and trust:getMainJob() or mate.mjob, slot, okL and level or 1, 40)
+    local lines, line, size = 0, {}, 0
+    local budget = REPLY_MAX - #string.format('GSQ|%s|wxl|', w[2])
+    for _, e in ipairs(list) do
+        local entry = string.format('%d:%d:%s', e.id, e.level or 0, string.sub(G.wsWireName(e.name), 1, 30))
+        local add = #entry + (#line > 0 and 1 or 0)
+        if #line > 0 and size + add > budget then
+            G.reply(player, w[2], 'wxl', table.concat(line, ','))
+            lines, line, size = lines + 1, {}, 0
+            add = #entry
+        end
+
+        line[#line + 1] = entry
+        size = size + add
+    end
+
+    if #line > 0 then
+        G.reply(player, w[2], 'wxl', table.concat(line, ','))
+        lines = lines + 1
+    end
+
+    G.reply(player, w[2], 'end', lines, #list)
 end
 
 -- ---------------------------------------------------------------- (version 7) party roles (squad_jobs.lua)

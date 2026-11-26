@@ -85,6 +85,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <tuple>
 
 namespace
 {
@@ -1357,6 +1358,67 @@ bool squadRefreshLook(CLuaBaseEntity* mate)
     return true;
 }
 
+// (F12, 2026-11-25) SquadSetWsSet(mate, { [slot] = itemId, ... }): the mate's weapon skill gear set (armor slots 4-15
+// only; anything else is ignored). squad_wsset.lua has already checked it (unlocks, job, level, slot, Rare, the
+// outfit); the map server checks level and job again each time the set goes on (Level Sync). An empty table clears it.
+// Returns the number of pieces kept (-1: not a squad mate). A set that is on right now is taken off first, so a change
+// never leaks modifiers.
+auto squadSetWsSet(CLuaBaseEntity* mate, const sol::table& set) -> int32
+{
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr)
+    {
+        return -1;
+    }
+
+    PTrust->RestoreSquadWsSet();
+
+    squad::wsset::Gear gear{};
+    int32              kept = 0;
+    for (const auto& kv : set)
+    {
+        if (!kv.first.is<int>() || !kv.second.is<int>())
+        {
+            continue;
+        }
+
+        const int slot   = kv.first.as<int>();
+        const int itemId = kv.second.as<int>();
+        if (squad::wsset::IsSetSlot(slot) && itemId > 0 && itemId <= 0xFFFF &&
+            xi::items::lookup<CItemEquipment>(static_cast<uint16>(itemId)) != nullptr)
+        {
+            gear[slot] = static_cast<uint16>(itemId);
+            ++kept;
+        }
+    }
+
+    PTrust->setSquadWsSet(gear);
+    return kept;
+}
+
+// (F12) SquadWsSetInfo(mate) -> { active = bool, [slot] = itemId ... }: what the map server holds for the mate
+auto squadWsSetInfo(CLuaBaseEntity* mate) -> sol::table
+{
+    auto  out    = ::lua.create_table();
+    auto* PTrust = toSquadMate(mate);
+    if (PTrust == nullptr)
+    {
+        return out;
+    }
+
+    out["active"]   = PTrust->squadWsSetActive();
+    const auto& set = PTrust->squadWsSet();
+    for (int slot = squad::wsset::FirstSlot; slot <= squad::wsset::LastSlot; ++slot)
+    {
+        if (set[slot] != 0)
+        {
+            out[slot] = set[slot];
+        }
+    }
+
+    return out;
+}
+
 // !squad sync <name> | off: the party menu's Level Sync, by name (a player, a bot or a squad mate in your party).
 // The same call the menu's packet makes, so the same rules apply (you lead the party, the target is 10+ and here).
 // Returns: 1 done (the server's own messages tell the result), 0 no party, -1 not the leader.
@@ -1871,6 +1933,30 @@ auto squadSpellKind(const uint16 spellId) -> std::string
     return squad::spellkind::Name(squad::spellkind::Classify(facts));
 }
 
+// Lua: SquadPartyFoes(player, x, y, z, radius) -> count, name of the nearest ("" when none), its targid (0 when none)
+// (B1, 2026-11-25) the monsters fighting the player's party within `radius` of the point: a link or a monster's pet still on the
+// party at camp keeps the next pull back (squad.lua campTick). The rule is CTrustController::PartyFoes / squad_threat.h.
+auto squadPartyFoes(CLuaBaseEntity* player, const float x, const float y, const float z, const float radius) -> std::tuple<int32, std::string, int32>
+{
+    auto* PChar = player != nullptr ? dynamic_cast<CCharEntity*>(player->GetBaseEntity()) : nullptr;
+    if (PChar == nullptr)
+    {
+        return { 0, "", 0 };
+    }
+
+    position_t anchor = PChar->loc.p;
+    anchor.x          = x;
+    anchor.y          = y;
+    anchor.z          = z;
+    const auto foes   = CTrustController::PartyFoes(PChar, anchor, radius > 0.0f ? radius : CTrustController::CampFightReach);
+    if (foes.empty())
+    {
+        return { 0, "", 0 };
+    }
+
+    return { static_cast<int32>(foes.size()), std::string(foes.front()->getName()), static_cast<int32>(foes.front()->targid) };
+}
+
 // Lua: SquadTryAbility(player, mate, abilityId) -> result name (cast, unknown, notready, notarget, busy)
 auto squadTryAbility(CLuaBaseEntity* player, CLuaBaseEntity* mate, const uint16 abilityId) -> std::string
 {
@@ -2151,6 +2237,7 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadTwoHourAbilityId", squadTwoHourAbilityId);
         ::lua.set_function("SquadCastSpell", squadCastSpell);
         ::lua.set_function("SquadSpellKind", squadSpellKind);
+        ::lua.set_function("SquadPartyFoes", squadPartyFoes); // (B1) links and pets still on the party at camp
         ::lua.set_function("SquadTryAbilityRaw", squadTryAbility);
         ::lua.set_function("GetSquad", getSquad);
         ::lua.set_function("SaveSquadMate", saveSquadMate);
@@ -2169,6 +2256,12 @@ class SquadModule : public CPPModule
     // (Gambits 0.3.3, Bard role targeting) role targets read include / exclude role bits from the target argument's high
     // byte (gambits_container.cpp AddGambit): squad_rulesets.lua accepts a rule's include / exclude only then
     ::lua.set_function("SquadRoleFilterEngine", []() -> int32 { return 1; });
+    // (2026-11-25, community feedback milestone) marker: this xi_map has ENEMY_FAMILY, PARTY_COUNT, ENEMY_COUNT, the out of combat
+    // support rules and SquadPartyFoes (squad_rulesets.lua R.engine3Ready)
+    ::lua.set_function("SquadFeedbackEngine", []() -> int32 { return 1; });
+    // (2026-11-25) marker: this xi_map places a mate by its local var SQUAD_POSITION (trust_controller.cpp PositionTick,
+    // squad_position.h); squad.lua offers !squad position to the menu (cap matepos) only then
+    ::lua.set_function("SquadPositionEngine", []() -> int32 { return 1; });
         ::lua.set_function("DeleteSquadMate", deleteSquadMate);
         ::lua.set_function("SetSquadEquip", setSquadEquip);
         ::lua.set_function("FindSquadItem", findSquadItem);
@@ -2191,6 +2284,13 @@ class SquadModule : public CPPModule
         ::lua.set_function("UnlockSquadItem", unlockSquadItem);
         ::lua.set_function("GetSquadUnlocks", getSquadUnlocks);
         ::lua.set_function("SquadOwnerMerit", squadOwnerMerit); // Gambits v2 U13
+        // (F12) the weapon skill gear set (squad_wsset.lua) and what the map server holds for it
+        ::lua.set_function("SquadSetWsSet", squadSetWsSet);
+        ::lua.set_function("SquadWsSetInfo", squadWsSetInfo);
+        // (F13) this map server charges a squad Summoner's avatar perpetuation, gives its avatar no monster TP moves and
+        // has the WS gear set: squad_summoner.lua / squad_wsset.lua check these markers (an older xi_map has none)
+        ::lua.set_function("SquadSmnEngine", []() -> int32 { return 1; });
+        ::lua.set_function("SquadWsSetEngine", []() -> int32 { return 1; });
     }
 };
 

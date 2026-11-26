@@ -120,6 +120,19 @@ enum class G_CONDITION : uint16
     // (low 16 bits) | number << 16. E.g. Utsusemi shadows left (Mod::UTSUSEMI) below 2. Rule Sets may only name the
     // modifiers squad_rulesets.lua R.MODS lists (UTSUSEMI, BLINK).
     MOD_LT             = 43,
+    // XI: Forever Offline (F1, 2026-11-25): the enemy is a monster of this family (condition_arg = family id, data/ecosystems.yaml,
+    // xi.mobFamily: Goblin 58). The enemy is the rule's target when that is a monster, else the mate's battle target, so a rule
+    // for yourself or the party can ask about the enemy ("Goblin -> Barfira"). False with no enemy.
+    ENEMY_FAMILY       = 44,
+    // XI: Forever Offline (F2, 2026-11-25): counts. condition_arg = filter (low 16 bits) | number << 16 (8 bits) | comparison << 24
+    // (0 at least, 1 exactly, 2 at most, 3 more than, 4 fewer than: squad_threat.h CountMatches).
+    // PARTY_COUNT filter: a status effect id the member has (0 = every member, 0xFFFE = asleep: Sleep, Sleep II or Lullaby).
+    //   Counted: living party members (you, the party, the mates) in this zone within PartyCountReach of the mate, the mate included.
+    // ENEMY_COUNT filter: HP% the monster must be above (low 8 bits, 0 = any) | radius in yalms (bits 8-15, 0 = 10) around the
+    //   mate's battle target. Counted: the monsters fighting the party (squad_threat.h, CTrustController::PartyFoes), the target
+    //   included; monsters that are only standing nearby are not. 0 with no enemy.
+    PARTY_COUNT        = 45,
+    ENEMY_COUNT        = 46,
 };
 
 enum class G_REACTION : uint16
@@ -329,7 +342,8 @@ public:
     auto AddGambit(const Gambit_t& gambit) -> std::string;
     void RemoveGambit(const std::string& id);
     void RemoveAllGambits();
-    auto Tick(timer::time_point tick) -> Task<void>;
+    // supportOnly (XI: Forever Offline, B3b): out of combat, only the support rules (gambits_support.h)
+    auto Tick(timer::time_point tick, bool supportOnly = false) -> Task<void>;
 
     // TODO: make private
     std::vector<TrustSkill_t> tp_skills;

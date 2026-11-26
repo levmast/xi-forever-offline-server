@@ -18,6 +18,8 @@
 //     HardcoreCanSwap(itemId) -> bool   Randomized: may this drop be swapped (sold on the AH, not Rare/Ex, no crystal)
 //     HardcoreLootPool(zoneId) -> {ids} Randomized: what the area's monsters (not NMs) can drop, swappable items only
 //     HardcoreNMPool() -> {ids}         Randomized: what every NM can drop, swappable items only
+//     HardcoreLootTable(zoneId)         Randomized (round 4): the area's drops with their weight and level
+//     HardcoreNMTable()                 Randomized (round 4): every NM's drops with weight, level and the NM's level
 //
 //   Randomized characters (mode 4) are not hardcore: none of the blocks below apply to them, and they party with anyone.
 //
@@ -55,6 +57,7 @@
 
 #include <array>
 #include <cstring>
+#include <map>
 #include <set>
 #include <string>
 
@@ -194,6 +197,54 @@ namespace
         }
     }
 
+    // (2026-11-24, Randomized round 4) the level a swappable item needs (0 = no level: not equipment)
+    auto itemLevel(uint16 itemId) -> uint8
+    {
+        if (const auto* PEquip = xi::items::lookup<CItemEquipment>(itemId))
+        {
+            return PEquip->getReqLvl();
+        }
+
+        return 0;
+    }
+
+    // Randomized round 4: like collect(), but each item keeps how often it really drops (per 1000; a grouped item gets
+    // its share of the group's rate) so a random drop is as rare or as common as the item it stands for. Steal and
+    // Despoil items are left out (they are not drops).
+    void collectWeighted(const DropList_t* list, std::map<uint16, double>& out)
+    {
+        if (list == nullptr)
+        {
+            return;
+        }
+
+        for (const auto& item : list->Items)
+        {
+            if ((item.DropType == DROP_NORMAL || item.DropType == DROP_GROUPED) && canSwap(item.ItemID))
+            {
+                out[item.ItemID] += std::max<double>(item.DropRate, 1.0);
+            }
+        }
+
+        for (const auto& group : list->Groups)
+        {
+            double total = 0;
+            for (const auto& item : group.Items)
+            {
+                total += item.DropRate;
+            }
+
+            for (const auto& item : group.Items)
+            {
+                if (canSwap(item.ItemID))
+                {
+                    const double share = total > 0 ? static_cast<double>(item.DropRate) / total : 1.0;
+                    out[item.ItemID] += std::max<double>(group.GroupRate * share, 1.0);
+                }
+            }
+        }
+    }
+
     auto isNM(const CMobEntity* PMob) -> bool
     {
         return (PMob->m_Type & xi::MobType::Notorious) != xi::MobType::Normal;
@@ -285,6 +336,66 @@ class HardcoreModule : public CPPModule
                                                                             });
                                                       });
                                return toTable(ids);
+                           });
+
+        // Randomized round 4 (2026-11-24): the area's drop table with weights and levels, for drops that stay as rare
+        // as what they replace and fit the monster's level: { {id=, w=, lvl=}, ... } (non-NM monsters only)
+        ::lua.set_function("HardcoreLootTable", [](uint16 zoneId) -> sol::table
+                           {
+                               std::map<uint16, double> weights;
+                               if (CZone* PZone = zoneutils::GetZone(static_cast<xi::ZoneId>(zoneId)))
+                               {
+                                   std::set<const DropList_t*> seen;
+                                   PZone->ForEachMob([&](CMobEntity* PMob)
+                                                     {
+                                                         if (PMob != nullptr && !isNM(PMob) && seen.insert(PMob->dropList()).second)
+                                                         {
+                                                             collectWeighted(PMob->dropList(), weights);
+                                                         }
+                                                     });
+                               }
+
+                               auto table = ::lua.create_table();
+                               int  n     = 1;
+                               for (const auto& [id, w] : weights)
+                               {
+                                   table[n++] = ::lua.create_table_with("id", id, "w", w, "lvl", itemLevel(id));
+                               }
+
+                               return table;
+                           });
+
+        // Randomized round 4: every NM's drops with the NM's level, so an NM gives what NMs of about its level give:
+        // { {id=, w=, lvl=, nm=}, ... } (one entry per NM and item)
+        ::lua.set_function("HardcoreNMTable", []() -> sol::table
+                           {
+                               auto table = ::lua.create_table();
+                               int  n     = 1;
+                               std::set<std::pair<const DropList_t*, uint8>> seen;
+                               zoneutils::ForEachZone([&](CZone* PZone)
+                                                      {
+                                                          PZone->ForEachMob([&](CMobEntity* PMob)
+                                                                            {
+                                                                                if (PMob == nullptr || !isNM(PMob))
+                                                                                {
+                                                                                    return;
+                                                                                }
+
+                                                                                const uint8 level = std::max<uint8>(PMob->m_minLevel, 1);
+                                                                                if (!seen.insert({ PMob->dropList(), level }).second)
+                                                                                {
+                                                                                    return;
+                                                                                }
+
+                                                                                std::map<uint16, double> weights;
+                                                                                collectWeighted(PMob->dropList(), weights);
+                                                                                for (const auto& [id, w] : weights)
+                                                                                {
+                                                                                    table[n++] = ::lua.create_table_with("id", id, "w", w, "lvl", itemLevel(id), "nm", level);
+                                                                                }
+                                                                            });
+                                                      });
+                               return table;
                            });
 
         // Randomized (2026-11-23): the level 1 gear a new character of this job and race can wear, by equipment slot

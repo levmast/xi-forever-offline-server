@@ -197,6 +197,9 @@ custom/sql/casket_costume_models.sql
 # Forever Beta Shirt (item 25725): own look (model 399), Chariot Band exp bonus, 5 charges, no recharge
 custom/sql/forever_beta_shirt.sql
 custom/lua/forever_beta_shirt.lua
+custom/lua/chocobo_egg_gift.lua
+custom/sql/forever_patch.sql
+custom/lua/forever_patch.lua
 
 # Ambient crowds: player-like adventurers in towns (switch and size: launcher, CONFIG > Rates)
 custom/lua/crowds.lua

@@ -804,6 +804,21 @@ local function hasEffect(entity, name)
     return ok and has == true
 end
 
+-- (B3a, 2026-11-25) asleep: a Cure wakes the one it lands on (cure.lua: target:wakeUp()), so a sleeping member needs it at any HP
+R.SLEEP_EFFECTS = R.SLEEP_EFFECTS or { 'SLEEP_I', 'SLEEP_II', 'LULLABY' }
+
+local function asleep(target)
+    for _, name in ipairs(R.SLEEP_EFFECTS) do
+        if hasEffect(target, name) then
+            return true
+        end
+    end
+
+    return false
+end
+
+R.asleep = asleep
+
 -- why this person needs nothing from this family, or nil when they do
 local function noNeed(d, fam, target)
     if fam.need == 'hp' then
@@ -811,7 +826,9 @@ local function noNeed(d, fam, target)
             return target:getHPP()
         end)
 
-        if ok and hpp ~= nil and hpp >= d.NEED_HP then
+        -- (B3a, 2026-11-25, "/p cure Momo" while Momo slept after the fight: "there is nothing to cure") a sleeping member is not
+        -- turned down for having full HP: the Cure is what wakes them. Who gets an untargeted "cure" is unchanged (you).
+        if ok and hpp ~= nil and hpp >= d.NEED_HP and not asleep(target) then
             return 'noneed'
         end
     elseif fam.need == 'status' then
@@ -946,6 +963,11 @@ end
 -- (she is casting) instead of going to somebody else, unless she cannot cast it at all. One voice for the whole request.
 -----------------------------------
 local function tryUnit(req, unit)
+    -- (B4) a spell for the caster herself: only that mate can do it
+    if unit.only ~= nil then
+        return tryList(req, unit, { unit.only })
+    end
+
     if req.sticky and req.speaker ~= nil then
         local result, a, b = tryList(req, unit, { req.speaker })
         if result == 'cast' or result == 'busy' then
@@ -978,7 +1000,8 @@ local function step(req)
                     unit.state, unit.id, unit.spellName = 'casting', b.id, b.name
                     R.claim(req.player, unit.id, unit.target)
                     R.markLine(req.player, req.text)
-                    if not req.acked then
+                    -- (B4) each mate casting a spell on herself answers for her own cast, checked on her
+                    if not req.acked or unit.only ~= nil then
                         req.acked = true
                         R.acknowledge(req.player, a, unit.spellName, unit.id, unit.target)
                     end
@@ -1080,7 +1103,41 @@ function R.run(player, mates, intent, text, d)
         end
 
         local tiers = tierList(fam, intent.tiers[key])
-        if fam.kind == 'caster' then
+        if fam.kind == 'own' then
+            -- (B4, 2026-11-25) a spell that only lands on its caster: each mate asked (one named mate, else all of them) casts it on
+            -- herself, all at once; a mate that already has it says so; naming somebody else is the self-only answer (G6)
+            local others, named = false, {}
+            for _, member in ipairs(intent.members) do
+                local found = nil
+                for _, mate in ipairs(req.asked) do
+                    if idOf(mate) == idOf(member) then
+                        found = mate
+                    end
+                end
+
+                if found ~= nil then
+                    named[#named + 1] = found -- "blink Ayame": Ayame casts it on herself
+                else
+                    others = true
+                end
+            end
+
+            if others then
+                req.said = req.said or { kind = 'selfonly', facts = { spell = fam.name } }
+            elseif #tiers > 0 then
+                for _, mate in ipairs(#named > 0 and named or req.asked) do
+                    local facts = { who = tostring(mate:getPacketName()), spell = fam.name }
+                    local why = isDown(mate) and 'skip' or noNeed(d, fam, mate)
+                    if why ~= nil and why ~= 'skip' then
+                        req.said = req.said or { kind = why, facts = facts }
+                    elseif why == nil and #req.units < R.MAX_UNITS then
+                        req.units[#req.units + 1] = {
+                            fam = key, tiers = tiers, id = tiers[1].id, spellName = tiers[1].name, target = mate, named = mate, only = mate, state = 'pending',
+                        }
+                    end
+                end
+            end
+        elseif fam.kind == 'caster' then
             req.said = req.said or { kind = 'refuse', facts = { why = fam.refuse or 'I cannot do that.' } }
         elseif #tiers > 0 then
             -- "raise" with nobody named is the person who is down: you, else the first fallen member of the party

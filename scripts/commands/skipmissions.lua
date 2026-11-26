@@ -70,35 +70,11 @@ local function keyItemsIn(filename)
     return given, taken
 end
 
-commandObj.onTrigger = function(player, logId, missionId, target)
-    local logInfo = logIdHelpers.getMissionLogInfo(logId)
-    if logInfo == nil then
-        error(player, 'Invalid logID.')
-        return
-    end
-
-    local logName = logInfo.full_name
-    logId = logInfo.mission_log
-
+-- (2026-11-25) the skip itself, also used by !skip (scripts/commands/skip.lua): every mission of the log before
+-- missionId is marked done, missionId becomes the current one (65535 = none: the whole story is done), and the key items
+-- those missions hand out are given, minus the ones a skipped mission takes back. Returns the count and the key items.
+commandObj.skip = function(targ, logId, missionId)
     local areaMissionIds = xi.mission.id[xi.mission.area[logId]]
-    if missionId ~= nil and areaMissionIds then
-        missionId = tonumber(missionId) or areaMissionIds[string.upper(missionId)]
-    end
-
-    if missionId == nil or missionId < 0 then
-        error(player, 'Invalid missionID.')
-        return
-    end
-
-    local targ = player
-    if target ~= nil then
-        targ = GetPlayerByName(target)
-        if targ == nil then
-            error(player, string.format('Player named "%s" not found!', target))
-            return
-        end
-    end
-
     -- the missions of this log that exist on this server, in order
     local skipped = {}
     local files   = {}
@@ -153,7 +129,41 @@ commandObj.onTrigger = function(player, logId, missionId, target)
         end
     end
 
-    player:printToPlayer(string.format('%s: %d missions marked done, now on mission %u, for %s.', logName, #skipped, missionId, targ:getName()))
+    return #skipped, gave
+end
+
+commandObj.onTrigger = function(player, logId, missionId, target)
+    local logInfo = logIdHelpers.getMissionLogInfo(logId)
+    if logInfo == nil then
+        error(player, 'Invalid logID.')
+        return
+    end
+
+    local logName = logInfo.full_name
+    logId = logInfo.mission_log
+
+    local areaMissionIds = xi.mission.id[xi.mission.area[logId]]
+    if missionId ~= nil and areaMissionIds then
+        missionId = tonumber(missionId) or areaMissionIds[string.upper(missionId)]
+    end
+
+    if missionId == nil or missionId < 0 then
+        error(player, 'Invalid missionID.')
+        return
+    end
+
+    local targ = player
+    if target ~= nil then
+        targ = GetPlayerByName(target)
+        if targ == nil then
+            error(player, string.format('Player named "%s" not found!', target))
+            return
+        end
+    end
+
+    local count, gave = commandObj.skip(targ, logId, missionId)
+    local skipped = { n = count }
+    player:printToPlayer(string.format('%s: %d missions marked done, now on mission %u, for %s.', logName, skipped.n, missionId, targ:getName()))
     if #gave > 0 then
         player:printToPlayer('Key items given: ' .. table.concat(gave, ', '):lower():gsub('_', ' '))
     end

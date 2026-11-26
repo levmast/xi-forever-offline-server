@@ -528,6 +528,12 @@ m:addOverride('xi.player.onGameIn', function(player, firstLogin, zoning)
         return result
     end
 
+    -- (2026-11-25, delukard) The hub never touches bags: a visitor keeps the bags they brought from home. Before this
+    -- the hub's full bags opened a Hardcore or classic character's every bag, and that went home with them.
+    if xi.hardcore and xi.hardcore.isHub then
+        return result
+    end
+
     if bags.full() then
         local opened = false
         for _, name in ipairs(bags.all) do

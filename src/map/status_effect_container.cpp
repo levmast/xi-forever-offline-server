@@ -65,6 +65,7 @@ When a status effect is gained twice on a player. It can do one or more of the f
 #include "enums/msg_std.h"
 #include "map_engine.h"
 #include "packets/s2c/0x029_battle_message.h"
+#include "utils/avatar_perpetuation.h" // XI: Forever Offline (F13): players and squad Summoners pay by one rule
 #include "utils/battleutils.h"
 #include "utils/charutils.h"
 #include "utils/itemutils.h"
@@ -2061,18 +2062,23 @@ void CStatusEffectContainer::TickRegen(timer::time_point tick)
         }
 
         // Final perpetuation = (Base / Half_Factor +- Reductions Or Penalties) * Avatar_Favor_Factor -> Minimum perpetuation is 1 except with 2Hour. Then refresh is applied.
-        if (m_POwner->getMod(xi::Mod::AVATAR_PERPETUATION) > 0 && (dynamic_cast<const CCharEntity*>(m_POwner) != nullptr))
+        // XI: Forever Offline (F13, 2026-11-25): a squad Summoner pays it too, by the same rule (utils/avatar_perpetuation.h),
+        // read from its own mods, its own day / weather and its own effects. A player's cost is unchanged. Ordinary trusts,
+        // and squad mates with a wyvern or a jug pet, never have the mod (only an avatar's spawn sets it).
+        const bool squadSummoner = IsSquadMate(m_POwner) && m_POwner->PPet != nullptr && m_POwner->PPet->objtype == TYPE_PET;
+        if (m_POwner->getMod(xi::Mod::AVATAR_PERPETUATION) > 0 && (PChar != nullptr || squadSummoner))
         {
-            int16 perpetuationCost = m_POwner->getMod(xi::Mod::AVATAR_PERPETUATION);
+            avatarperp::Inputs perp{};
+            perp.base = m_POwner->getMod(xi::Mod::AVATAR_PERPETUATION);
 
-            if (m_POwner->PPet != nullptr && PChar != nullptr)
+            if (m_POwner->PPet != nullptr)
             {
                 CPetEntity* PPet          = static_cast<CPetEntity*>(m_POwner->PPet);
                 ELEMENT     petElement    = static_cast<ELEMENT>(PPet->m_Element);
                 bool        elementValid  = petElement >= ELEMENT_FIRE && petElement <= ELEMENT_DARK; // Check if the element is not 0 (None) or out of bounds
                 uint8       petElementIdx = 0;
                 ELEMENT     dayElement    = battleutils::GetDayElement();
-                auto        weather       = battleutils::GetWeather(PChar, false);
+                auto        weather       = battleutils::GetWeather(m_POwner, false);
 
                 if (!elementValid)
                 {
@@ -2090,58 +2096,30 @@ void CStatusEffectContainer::TickRegen(timer::time_point tick)
                 static const xi::Weather weatherStrong[8] = { xi::Weather::HotSpell, xi::Weather::Snow, xi::Weather::Wind, xi::Weather::DustStorm, xi::Weather::Thunder, xi::Weather::Rain, xi::Weather::Auroras, xi::Weather::Gloom };
 
                 // Day / Weather elemental matches.
-                bool dayMatch     = elementValid && dayElement == petElement;
-                bool weatherMatch = elementValid && (weather == weatherStrong[petElementIdx] || weather == static_cast<xi::Weather>(static_cast<uint16_t>(weatherStrong[petElementIdx]) + 1));
+                perp.hasPet       = true;
+                perp.dayMatch     = elementValid && dayElement == petElement;
+                perp.weatherMatch = elementValid && (weather == weatherStrong[petElementIdx] || weather == static_cast<xi::Weather>(static_cast<uint16_t>(weatherStrong[petElementIdx]) + 1));
 
                 // Halve perpetuation cost before all regular reductions.
-                bool halfFromCarby   = PChar->getMod(xi::Mod::HALF_PERPETUATION_CARBUNCLE) != 0 && PPet->petID() == PETID_CARBUNCLE;
-                bool halfFromDay     = PChar->getMod(xi::Mod::HALF_PERPETUATION_DAY) != 0 && dayMatch;
-                bool halfFromWeather = PChar->getMod(xi::Mod::HALF_PERPETUATION_WEATHER) != 0 && weatherMatch;
+                const bool halfFromCarby   = m_POwner->getMod(xi::Mod::HALF_PERPETUATION_CARBUNCLE) != 0 && PPet->petID() == PETID_CARBUNCLE;
+                const bool halfFromDay     = m_POwner->getMod(xi::Mod::HALF_PERPETUATION_DAY) != 0 && perp.dayMatch;
+                const bool halfFromWeather = m_POwner->getMod(xi::Mod::HALF_PERPETUATION_WEATHER) != 0 && perp.weatherMatch;
+                perp.halved                = halfFromCarby || halfFromDay || halfFromWeather;
 
-                if (halfFromCarby || halfFromDay || halfFromWeather)
-                {
-                    perpetuationCost = static_cast<int16>(perpetuationCost / 2); // Confirmed it's floored.
-                }
-
-                // Apply regular perpetuation reduction.
-                perpetuationCost = perpetuationCost - PChar->getMod(xi::Mod::PERPETUATION_REDUCTION);
-
-                // Apply elemental affinity perpetuation bonus/penalty.
-                if (elementValid)
-                {
-                    perpetuationCost = perpetuationCost - PChar->getMod(strong[petElementIdx]);
-                }
-
-                // Apply day element perpetuation reduction.
-                if (dayMatch)
-                {
-                    perpetuationCost = perpetuationCost - PChar->getMod(xi::Mod::DAY_REDUCTION);
-                }
-
-                // Apply weather element perpetuation reduction.
-                if (weatherMatch)
-                {
-                    perpetuationCost = perpetuationCost - PChar->getMod(xi::Mod::WEATHER_REDUCTION);
-                }
+                perp.reduction        = m_POwner->getMod(xi::Mod::PERPETUATION_REDUCTION);
+                perp.affinity         = elementValid ? m_POwner->getMod(strong[petElementIdx]) : 0;
+                perp.dayReduction     = m_POwner->getMod(xi::Mod::DAY_REDUCTION);
+                perp.weatherReduction = m_POwner->getMod(xi::Mod::WEATHER_REDUCTION);
 
                 // Avatar's Favor multiplier after all regular reductions.
-                if (PChar->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::AvatarsFavor) &&
-                    ((PPet->petID() >= PETID_CARBUNCLE && PPet->petID() <= PETID_CAIT_SITH) || PPet->petID() == PETID_SIREN))
-                {
-                    perpetuationCost = static_cast<int16>(perpetuationCost * 1.2); // Confirmed it's floored.
-                }
+                perp.avatarsFavor = m_POwner->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::AvatarsFavor) &&
+                                    ((PPet->petID() >= PETID_CARBUNCLE && PPet->petID() <= PETID_CAIT_SITH) || PPet->petID() == PETID_SIREN);
             }
 
             // Astral Flow.
-            if (m_POwner->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::AstralFlow))
-            {
-                perpetuationCost = 0;
-            }
-            else if (perpetuationCost < 1)
-            {
-                perpetuationCost = 1;
-            }
+            perp.astralFlow = m_POwner->StatusEffectContainer->HasStatusEffect(xi::StatusEffect::AstralFlow);
 
+            const int16 perpetuationCost = avatarperp::Cost(perp);
             m_POwner->addMP(refresh - perpetuationCost);
 
             if (m_POwner->health.mp == 0 && m_POwner->PPet != nullptr && m_POwner->PPet->objtype == TYPE_PET)

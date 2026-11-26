@@ -27,6 +27,10 @@
 #include "mob_controller.h"
 #include "trust_hold.h"
 
+#include "ai/helpers/squad_follow.h"
+
+#include <vector>
+
 class CCharEntity;
 class CTrustEntity;
 class CSpell;
@@ -52,6 +56,9 @@ public:
     auto Ability(EntityId target, uint16 abilityid) -> bool override;
     auto Cast(EntityId target, SpellID spellid) -> bool override;
     auto RangedAttack(EntityId target) -> bool override;
+    // XI: Forever Offline (F12): every squad weapon skill (TryTrustSkill and the SA/TA closer) starts here: a squad mate's
+    // WS gear set goes on first, and comes off again at once when the start is refused
+    auto WeaponSkill(EntityId target, uint16 wsid) -> bool override;
 
     // 1.5: melee trusts used to path around at 3.0 yalms from the mob's centre and
     // then stop there, which is outside real hit range on anything larger than a
@@ -63,6 +70,16 @@ public:
 
     auto GetTopEnmity() const -> CBattleEntity*;
     auto GetPartyPosition() const -> uint8;
+
+    // FFXI Offline squad (B1, F2): the monsters fighting PMaster's party within radius of anchor, nearest first (squad_threat.h)
+    static auto PartyFoes(CCharEntity* PMaster, const position_t& anchor, float radius) -> std::vector<CBattleEntity*>;
+    static constexpr float CampFightReach = { 20.0f }; // = CampFightRadius in trust_controller.cpp (squad.lua ATTACK_CAMP_REACH)
+
+    // FFXI Offline squad (B5): true while this mate cannot get closer to the one it follows (squad_follow.h)
+    auto IsStuck() const -> bool
+    {
+        return m_Follow.Stuck();
+    }
 
     // XI: Forever Offline: a script can hold the stock engage / weapon skill decisions (trust_hold.h). true while the hold for
     // this bit (trust_hold::HoldEngage, HoldWeaponSkill) is on and its script keeps renewing it.
@@ -82,6 +99,22 @@ private:
     auto OrderedTarget() -> CBattleEntity*;                       // FFXI Offline squad: !squad attack (the player's SQUAD_ATTACK_* local vars)
     void Declump(const CCharEntity* PMaster, const CBattleEntity* PTarget) const;
     void PathOutToDistance(const CBattleEntity* PTarget, float amount);
+    // FFXI Offline squad: the position the player chose for this mate (local var SQUAD_POSITION, squad_position.h).
+    // Heads for its spot behind the enemy (or the TA partner spot) when that is due; true while it is on its way there,
+    // so the usual distance keeping waits. `melee`: a melee mate; `radius`: its distance from the enemy.
+    auto PositionTick(CCharEntity* PMaster, CBattleEntity* PTarget, bool melee, float radius) -> bool;
+    auto UsesPosition() const -> bool; // a position other than Normal is chosen
+    bool m_PositionPlaced = false;     // this tick the mate has a spot of its own (no sidestepping then)
+
+    // FFXI Offline squad (B5): walk toward goal, stopping `want` short; far away a throttled navmesh path, no path: the wall-safe step
+    // nearBand: closer than this, exactly the old behaviour (a path every tick, else the step); step: walk the far path this tick
+    void CatchUp(const position_t& goal, float want, float nearBand, bool step);
+    // FFXI Offline squad (B5): the one this mate follows out of a fight, the player when the mate in front is lost or stuck
+    auto FollowAnchor(CCharEntity* PMaster, uint8 partyPos, bool gather) -> CBattleEntity*;
+    int64_t                 m_FollowRepathMs = 0; // (B5) when this mate last asked for a far path (squad_follow.h CatchUp)
+    squad::follow::Progress m_Follow;
+    // FFXI Offline squad (B1): a monster fighting the party at the camp (PartyFoes), or nullptr
+    auto CampThreat(const position_t& camp) -> CBattleEntity*;
 
     timer::time_point m_LastRepositionTime;
     uint8             m_failedRepositionAttempts;

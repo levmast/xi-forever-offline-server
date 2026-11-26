@@ -27,6 +27,7 @@
 #include "ai/ai_container.h"
 #include "entities/battle_entity.h"
 #include "entities/char_entity.h"
+#include "entities/trust_entity.h" // XI: Forever Offline (F12): the squad WS gear set
 #include "enums/msg_basic.h"
 #include "packets/s2c/0x028_battle2.h"
 #include "packets/s2c/0x029_battle_message.h"
@@ -208,6 +209,13 @@ void CWeaponSkillState::Cleanup(const timer::time_point tick)
     if (!m_PEntity)
     {
         return;
+    }
+
+    // XI: Forever Offline (F12): a squad mate's WS gear set never outlives its weapon skill (interrupted, target gone
+    // before the damage, knocked out). Usually already restored after the damage; then this does nothing.
+    if (auto* PTrust = dynamic_cast<CTrustEntity*>(m_PEntity))
+    {
+        PTrust->RestoreSquadWsSet();
     }
 
     // Call listener. Feed skill result.

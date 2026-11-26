@@ -29,6 +29,7 @@ function r:setPetName() end
 function r:unlockAttachment() end
 r.bag, r.worn, r.gil = {}, {}, 0
 function r:getRace() return 3 end
+function r:getMainLvl() return 1 end
 function r:addItem(id) r.bag[#r.bag + 1] = id; return true end
 function r:equipItem(id, c, slot) r.worn[slot] = id end
 function r:addGil(g) r.gil = r.gil + g end
@@ -41,7 +42,7 @@ check(r.gil == 10000, 'the starting 10,000 gil')
 check(r.worn[0] == 16001 and r.worn[1] == nil, 'a two-handed weapon: no shield')
 check(r.worn[4] == 12400 and r.worn[5] == 12500, 'head and body filled')
 check(r.worn[13] and r.worn[14] and r.worn[13] ~= r.worn[14], 'two different rings')
-check(r.worn[2] == nil and r.worn[3] == nil, 'ranged and ammo left empty')
+check(H.RANGED_KIT[r.mjob] ~= nil or (r.worn[2] == nil and r.worn[3] == nil), 'ranged and ammo left empty (but for RNG / COR)')
 xi.player.onGameIn(r, false, true); runTimers()
 check(r.gil == 10000 and #r.bag == 5, 'the kit comes once')
 local rolled = r:getCharVar('[HC]Jobs')
@@ -62,10 +63,10 @@ r.jobs[r.mjob] = 70; xi.player.onPlayerLevelUp(r)
 count = 0; for j = 1, 18 do if bit.band(r:getCharVar('[HC]Jobs'), bit.lshift(1, j)) ~= 0 then count = count + 1 end end
 check(count == 4 and r:getCharVar('[HC]Grants') == 3, 'four jobs in all after 33 and 65')
 xi.player.onPlayerLevelUp(r); check(r:getCharVar('[HC]Grants') == 3, 'no fifth job')
-check(#sent == 0, 'no cosmetic milestones for Randomized')
+check(#sent == 21 and sent[1][3] == 'Fate', 'Randomized milestones: 3 cosmetics each, from Fate (round 4): ' .. #sent)
 -- loot
-local mob = { isNM = function() return false end, getZoneID = function() return 100 end }
-local nm = { isNM = function() return true end, getZoneID = function() return 100 end }
+local mob = { isNM = function() return false end, getZoneID = function() return 100 end, getMainLvl = function() return 10 end }
+local nm = { isNM = function() return true end, getZoneID = function() return 100 end, getMainLvl = function() return 10 end }
 local got = H.randomLoot(r, mob, 1001)
 check(got == 1002 or got == 1003, 'a drop becomes another item from the area pool')
 check(H.randomLoot(r, mob, 4096) == 4096, 'a crystal stays a crystal')

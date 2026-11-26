@@ -22,6 +22,8 @@
 #include "gambits_container.h"
 #include "gambits_reach.h"
 #include "gambits_sata.h"
+#include "gambits_support.h"
+#include "squad_threat.h"
 
 #include "ability.h"
 #include "common/settings.h"
@@ -105,6 +107,41 @@ auto resonanceOf(CStatusEffect* PSCEffect) -> std::list<xi::SkillchainType>
 // 2-3 s evaluation cadence this gives a human-like 1-4 s before the cast starts.
 constexpr auto MagicBurstReaction = std::chrono::seconds(1);
 constexpr auto MagicBurstMargin   = std::chrono::milliseconds(500); // the spell must land this long before the window closes
+
+// XI: Forever Offline (B3b, 2026-11-25): a rule a squad mate runs out of combat (gambits_support.h)
+static_assert(gambits::support::TargetSelf == static_cast<uint16_t>(G_TARGET::SELF) && gambits::support::TargetParty == static_cast<uint16_t>(G_TARGET::PARTY) &&
+              gambits::support::TargetMaster == static_cast<uint16_t>(G_TARGET::MASTER) && gambits::support::TargetTank == static_cast<uint16_t>(G_TARGET::TANK) &&
+              gambits::support::TargetMelee == static_cast<uint16_t>(G_TARGET::MELEE) && gambits::support::TargetRanged == static_cast<uint16_t>(G_TARGET::RANGED) &&
+              gambits::support::TargetCaster == static_cast<uint16_t>(G_TARGET::CASTER) &&
+              gambits::support::TargetPartyLowestHpp == static_cast<uint16_t>(G_TARGET::PARTY_LOWEST_HPP));
+static_assert(gambits::support::ConditionStatus == static_cast<uint16_t>(G_CONDITION::STATUS) &&
+              gambits::support::ConditionStatusFlag == static_cast<uint16_t>(G_CONDITION::STATUS_FLAG) &&
+              gambits::support::ReactionMagic == static_cast<uint16_t>(G_REACTION::MA));
+
+// XI: Forever Offline (F2): PARTY_COUNT counts the members within this reach of the mate (a party spell's casting range), and
+// the filter value that means "asleep" (Sleep, Sleep II or Lullaby)
+constexpr float  PartyCountReach  = 20.0f;
+constexpr uint32 PartyCountAsleep = 0xFFFE;
+
+auto IsSupportGambit(const Gambit_t& gambit) -> bool
+{
+    bool anyStatus = false;
+    for (const auto& group : gambit.predicate_groups)
+    {
+        for (const auto& predicate : group.predicates)
+        {
+            anyStatus = anyStatus || support::IsStatusCondition(static_cast<uint16_t>(predicate.condition));
+        }
+    }
+
+    int magic = 0;
+    for (const auto& action : gambit.actions)
+    {
+        magic += action.reaction == G_REACTION::MA ? 1 : 0;
+    }
+
+    return support::IsSupportRule(static_cast<uint16_t>(gambit.target_selector), anyStatus, static_cast<int>(gambit.actions.size()), magic);
+}
 
 // XI: Forever Offline (job expansion): a party role set for one character by the squad (local var SQUAD_ROLE: 1 tank,
 // 2 melee, 3 caster, 4 ranged; 0 = by main job, as before). Only the squad sets it (!squad partyrole).
@@ -302,7 +339,7 @@ void CGambitsContainer::RemoveAllGambits()
     m_sataUsedAbility = 0;
 }
 
-auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
+auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnly) -> Task<void>
 {
     TracyZoneScoped;
 
@@ -317,7 +354,8 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
     // XI: Forever Offline (squad SA/TA before a weapon skill, gambits_sata.h): right after a paired Sneak/Trick Attack the
     // weapon skill is tried on every tick until it goes or the window closes, not on the rules' 2-3 s cadence. Only the
     // weapon skill: the rules keep their cadence. Armed only for squad mates whose Rule Set pairs the two.
-    if (m_sataFollowUp)
+    // (B3b: none of this out of combat: the support pass below runs only the support rules)
+    if (m_sataFollowUp && !supportOnly)
     {
         const bool hasEffect = POwner->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SneakAttack, xi::StatusEffect::TrickAttack });
         // (stunned, asleep ...: the weapon skill would be refused, and the engine-trigger path reports a refused weapon
@@ -359,7 +397,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
 
     // (2026-11-23, final batch I-B) the rule's own request for this opening is completed on the tick the thief is in position,
     // not on the next 2-3 s rules pass (TryUseSataWhenReady checks everything again; a no-op for everyone else)
-    if (TryUseSataWhenReady(tick, busy))
+    if (!supportOnly && TryUseSataWhenReady(tick, busy))
     {
         co_return;
     }
@@ -382,7 +420,7 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
     // Deal with TP skills before any gambits
     // TODO: Should this be its own special gambit?
     // XI: Forever Offline: a script can hold the stock weapon skills (trust_hold.h); the gambits below still run
-    if (POwner->health.tp >= 1000 && !controller->ScriptHolds(trust_hold::HoldWeaponSkill) && TryTrustSkill())
+    if (!supportOnly && POwner->health.tp >= 1000 && !controller->ScriptHolds(trust_hold::HoldWeaponSkill) && TryTrustSkill())
     {
         WithdrawSataAfterWeaponSkill(POwner->GetBattleTarget()); // (2026-11-23, final batch R)
         co_return;
@@ -402,6 +440,12 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
     for (auto& gambit : gambits)
     {
         if (tick < gambit.last_used + std::chrono::seconds(gambit.retry_delay))
+        {
+            continue;
+        }
+
+        // (B3b) out of combat: the support rules only, in their written order
+        if (supportOnly && !IsSupportGambit(gambit))
         {
             continue;
         }
@@ -799,9 +843,11 @@ auto CGambitsContainer::Tick(timer::time_point tick) -> Task<void>
                 {
                     firstMAIndex    = static_cast<int>(i);
                     auto maybeSpell = ResolveMA(action, target);
-                    if (!maybeSpell.has_value())
+                    const auto* PSupportSpell = (supportOnly && maybeSpell.has_value()) ? spell::GetSpell(maybeSpell.value()) : nullptr;
+                    if (!maybeSpell.has_value() || (supportOnly && (PSupportSpell == nullptr || PSupportSpell->canTargetEnemy())))
                     {
                         // Couldn't resolve first spell -> cannot use this gambit now
+                        // (B3b: out of combat, never a spell cast on an enemy)
                         canExecute[i] = false;
                     }
                     else
@@ -1803,6 +1849,75 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
             case G_CONDITION::IS_ECOSYSTEM:
             {
                 predicateResults.push_back(triggerTarget->m_EcoSystem == static_cast<xi::Ecosystem>(predicate.condition_arg));
+                continue;
+            }
+            case G_CONDITION::ENEMY_FAMILY:
+            {
+                // (F1) the rule's target when it is a monster, else the enemy this mate fights
+                const auto* PEnemy = dynamic_cast<const CMobEntity*>(triggerTarget);
+                if (PEnemy == nullptr)
+                {
+                    PEnemy = dynamic_cast<const CMobEntity*>(POwner->GetBattleTarget());
+                }
+
+                predicateResults.push_back(PEnemy != nullptr && !PEnemy->isDead() && PEnemy->m_Family == static_cast<uint16>(predicate.condition_arg & 0xFFFF));
+                continue;
+            }
+            case G_CONDITION::PARTY_COUNT:
+            {
+                // (F2) e.g. "2 or more party members asleep -> Curaga", else "-> Cure"
+                const uint32 filter    = predicate.condition_arg & 0xFFFF;
+                const int    threshold = static_cast<int>((predicate.condition_arg >> 16) & 0xFF);
+                const int    op        = static_cast<int>((predicate.condition_arg >> 24) & 0x7);
+                int          count     = 0;
+                if (auto* PMaster = dynamic_cast<CCharEntity*>(POwner->PMaster); PMaster != nullptr)
+                {
+                    // clang-format off
+                    PMaster->ForPartyWithTrusts([&](CBattleEntity* PMember)
+                    {
+                        if (PMember == nullptr || !PMember->isAlive() || PMember->loc.zone != POwner->loc.zone ||
+                            distance(PMember->loc.p, POwner->loc.p) > PartyCountReach)
+                        {
+                            return;
+                        }
+
+                        bool matches = filter == 0;
+                        if (filter == PartyCountAsleep)
+                        {
+                            matches = PMember->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SleepI, xi::StatusEffect::SleepIi, xi::StatusEffect::Lullaby });
+                        }
+                        else if (filter != 0)
+                        {
+                            matches = PMember->StatusEffectContainer->HasStatusEffect(static_cast<xi::StatusEffect>(filter));
+                        }
+
+                        count += matches ? 1 : 0;
+                    });
+                    // clang-format on
+                }
+
+                predicateResults.push_back(squad::threat::CountMatches(count, op, threshold));
+                continue;
+            }
+            case G_CONDITION::ENEMY_COUNT:
+            {
+                // (F2) e.g. "3 or more monsters above 30% HP around the target -> Stonega", else "-> Stone"
+                const int    hpAbove   = static_cast<int>(predicate.condition_arg & 0xFF);
+                const float  radius    = ((predicate.condition_arg >> 8) & 0xFF) != 0 ? static_cast<float>((predicate.condition_arg >> 8) & 0xFF) : 10.0f;
+                const int    threshold = static_cast<int>((predicate.condition_arg >> 16) & 0xFF);
+                const int    op        = static_cast<int>((predicate.condition_arg >> 24) & 0x7);
+                int          count     = 0;
+                auto*        PMaster   = dynamic_cast<CCharEntity*>(POwner->PMaster);
+                const auto*  PEnemy    = POwner->GetBattleTarget();
+                if (PMaster != nullptr && PEnemy != nullptr && !PEnemy->isDead())
+                {
+                    for (const auto* PFoe : CTrustController::PartyFoes(PMaster, PEnemy->loc.p, radius))
+                    {
+                        count += PFoe->GetHPP() > hpAbove ? 1 : 0;
+                    }
+                }
+
+                predicateResults.push_back(squad::threat::CountMatches(count, op, threshold));
                 continue;
             }
             case G_CONDITION::RANDOM:

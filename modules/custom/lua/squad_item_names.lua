@@ -184,6 +184,12 @@ function N.resolve(text, env, owned)
             return single, 'fullname'
         end
 
+        -- (2026-11-25, jainfarstrider: "!squad give Sneak" said Item not found) a spell scroll by the spell's own name:
+        -- the game files a scroll's short name as the spell (sneak, cure_ii). Scrolls are items 4609-5631.
+        if single >= 4609 and single <= 5631 then
+            return single, 'name'
+        end
+
         return nil, 'notfound'
     elseif count == 0 then
         return nil, 'notfound'

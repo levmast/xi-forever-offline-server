@@ -4919,7 +4919,7 @@ void AddCapacityPoints(CCharEntity* PChar, CBaseEntity* PMob, uint32 capacityPoi
         return;
     }
 
-    capacityPoints = (uint32)(capacityPoints * settings::get<float>("map.EXP_RATE"));
+    capacityPoints = (uint32)(capacityPoints * hardcoreutils::rate(PChar, "map.EXP_RATE")); // XI: Forever Offline: the character's own rate (Steel / Silver, a hub visitor)
 
     if (capacityPoints > 0)
     {

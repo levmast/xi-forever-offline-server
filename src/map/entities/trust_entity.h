@@ -24,6 +24,7 @@
 #include <common/macros.h>
 #include <map/entities/mob_entity.h>
 #include <map/entities/types/automaton_info.h>
+#include <map/ai/helpers/squad_wsset.h>
 
 #include <common/types/flag.h>
 
@@ -95,6 +96,29 @@ public:
         return slot < squadEquip_.size() ? squadEquip_[slot] : 0;
     }
 
+    // XI: Forever Offline (F12): the mate's weapon skill gear set (armor slots 4-15, item ids, 0 = keep the outfit piece),
+    // set by squad.lua (SquadSetWsSet) when the mate is called or its set is saved. ApplySquadWsSet puts it on right
+    // before a weapon skill starts (CTrustController::WeaponSkill); RestoreSquadWsSet takes it off (after the damage,
+    // a refused start, the weapon skill state's cleanup, death, despawn). Both keep HP/MP as they are (clamped to the
+    // new maximum, never refilled). Restore is safe to call any number of times.
+    void setSquadWsSet(const squad::wsset::Gear& set)
+    {
+        squadWsSet_ = set;
+    }
+
+    auto squadWsSet() const -> const squad::wsset::Gear&
+    {
+        return squadWsSet_;
+    }
+
+    auto squadWsSetActive() const -> bool
+    {
+        return squadWsLedger_.active();
+    }
+
+    auto ApplySquadWsSet() -> bool;
+    auto RestoreSquadWsSet() -> bool;
+
     // Squad mates: the list of every spell this mate knows. The trust owns it and frees it when it goes.
     void setSquadSpellList(CMobSpellList* list)
     {
@@ -128,6 +152,9 @@ private:
     AutomatonInfo  squadAutomaton_{};
 
     std::array<uint16, 16> squadEquip_{};
+
+    squad::wsset::Gear   squadWsSet_{};
+    squad::wsset::Ledger squadWsLedger_{};
 };
 
 // true for a squad mate, false for anything else (a retail trust included)
