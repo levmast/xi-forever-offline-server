@@ -162,6 +162,9 @@ custom/lua/halloween_festival.lua
 # Seasonal events switch: by date / always on / off (launcher, CONFIG > Rates; writes custom/lua/events_config.lua)
 custom/lua/events_mode.lua
 
+# No battle music: fights keep the zone's normal music (GM: !battlemusic on / off)
+custom/lua/no_battle_music.lua
+
 # Horro's Visit: the Dragon Quest X slime event (dates in the file, or the Seasonal events switch)
 custom/lua/horros_visit.lua
 
