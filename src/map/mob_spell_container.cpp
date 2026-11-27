@@ -398,6 +398,13 @@ auto CMobSpellContainer::GetBestAgainstTargetWeakness(CBattleEntity* PTarget, Sp
         }
         case ELEMENT_LIGHT:
         {
+            // XI: Forever Offline (2026-11-27, levi: a BLM/WHM squad mate kept casting Banish): a Black Mage's light
+            // weakness answer is not a White Mage nuke. It falls through to its strongest elemental nuke below.
+            if (m_PMob != nullptr && m_PMob->objtype == TYPE_TRUST && m_PMob->GetMJob() == xi::Job::BLM)
+            {
+                break;
+            }
+
             choice = GetBestAvailable(SPELLFAMILY_BANISH);
             break;
         }

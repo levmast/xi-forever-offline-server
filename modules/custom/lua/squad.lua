@@ -6859,8 +6859,58 @@ local function switchForAction(action)
     return nil
 end
 
+-- (2026-11-27, levi: "my blm keeps on casting whm spells like banish") a Black Mage mate never casts the White Mage's
+-- offensive spells (Banish, Banishga, Holy, Flash) from a WHM support job or a Rule Set. Party-chat requests still work.
+-- Its "best nuke for this foe" and magic burst choices skip Banish and Holy in the core (mob_spell_container.cpp,
+-- gambits_container.cpp). A table field, not a top-level local: this chunk is at LuaJIT's 200-locals limit.
+xi.squad.blmSkipsWhmSpell = function(mob, action)
+    if action[1] ~= ai.r.MA then
+        return false
+    end
+
+    local okJob, job = pcall(function() return mob:getMainJob() end)
+    if not okJob or job ~= xi.job.BLM then
+        return false
+    end
+
+    local skip = xi.squad.blmWhmSkipIds
+    if skip == nil then
+        skip = { family = {}, spell = {} }
+        for _, name in ipairs({ 'BANISH', 'BANISHGA', 'HOLY' }) do
+            local id = xi.magic.spellFamily[name]
+            if id ~= nil then
+                skip.family[id] = true
+            end
+        end
+
+        for _, name in ipairs({ 'BANISH', 'BANISH_II', 'BANISH_III', 'BANISH_IV', 'BANISH_V', 'BANISHGA', 'BANISHGA_II',
+            'BANISHGA_III', 'BANISHGA_IV', 'BANISHGA_V', 'HOLY', 'HOLY_II', 'FLASH' }) do
+            local id = xi.magic.spell[name]
+            if id ~= nil then
+                skip.spell[id] = true
+            end
+        end
+
+        xi.squad.blmWhmSkipIds = skip
+    end
+
+    if action[2] == ai.s.HIGHEST then
+        return skip.family[action[3]] == true
+    end
+
+    if action[2] == ai.s.SPECIFIC then
+        return skip.spell[action[3]] == true
+    end
+
+    return false
+end
+
 local function addGambit(mob, target, condition, action, retry)
     if condition == nil or action == nil then
+        return
+    end
+
+    if xi.squad.blmSkipsWhmSpell(mob, action) then
         return
     end
 

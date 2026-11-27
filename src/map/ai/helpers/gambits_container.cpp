@@ -2755,6 +2755,13 @@ auto CGambitsContainer::BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>
                 continue;
             }
 
+            // XI: Forever Offline (2026-11-27, levi): a Black Mage mate bursts with its own nukes, never Banish or Holy
+            // from a White Mage support job
+            if ((family == SPELLFAMILY_BANISH || family == SPELLFAMILY_HOLY) && POwner->GetMJob() == xi::Job::BLM)
+            {
+                continue;
+            }
+
             for (const auto id : POwner->SpellContainer->m_damageList)
             {
                 CSpell* PSpell = spell::GetSpell(id);
