@@ -40,6 +40,7 @@
 #include "map/entities/char_entity.h"
 #include "map/lua/lua_base_entity.h"
 #include "map/map_session.h"
+#include "map/map_constants.h"
 #include "map/navmesh/navmesh.h"
 #include "map/packets/basic.h"
 #include "map/packets/c2s/0x00a_login.h"
@@ -138,7 +139,7 @@ struct Bot
     bool                        invitePending = false;
     std::string                 inviterName;
     timer::time_point           inviteAt = {};
-    uint16                      moveCounter = 0;
+    float                       moveCounter = 0.0f;
     timer::time_point           retryAt = {};
 };
 
@@ -262,7 +263,7 @@ auto rotationTowards(const position_t& from, const position_t& to) -> uint8
     return static_cast<uint8>(static_cast<int>(turn * 256.0f) & 0xFF);
 }
 
-void sendPosition(Bot* b, const position_t& p, uint8 rotation, bool moving)
+void sendPosition(Bot* b, const position_t& p, uint8 rotation, bool moving, float dt)
 {
     GP_CLI_COMMAND_POS pkt{};
     pkt.x         = p.x;
@@ -270,13 +271,33 @@ void sendPosition(Bot* b, const position_t& p, uint8 rotation, bool moving)
     pkt.y         = p.z;
     pkt.dir       = static_cast<int8_t>(rotation);
     pkt.RunMode   = 1;
-    pkt.MoveFlame = moving ? ++b->moveCounter : 0;
     if (CCharEntity* PChar = charOf(b))
     {
+        if (moving)
+        {
+            // Match CPathFind's animation clock (0x35, or 0x28 with a speed
+            // change, per logic tick). Keep fractional units at our faster rate.
+            const float unitsPerTick = PChar->GetSpeed() != PChar->UpdateSpeed() ? 40.0f : 53.0f;
+            const float tickSeconds  = std::chrono::duration<float>(kLogicUpdateInterval).count();
+            b->moveCounter = std::fmod(b->moveCounter + unitsPerTick * dt / tickSeconds, 8192.0f);
+        }
+        pkt.MoveFlame  = moving ? static_cast<uint16>(b->moveCounter) : 0;
         pkt.facetarget = PChar->m_TargID;
     }
 
-    inject(b, pkt);
+    if (inject(b, pkt))
+    {
+        CCharEntity* PChar = charOf(b);
+        if (PChar && PChar->loc.zone && (PChar->updatemask & UPDATE_POS))
+        {
+            // The normal PostTick broadcast is limited to the zone tick and a
+            // 250 ms throttle. Publish each accepted bot step on its 100 ms timer.
+            // Use the normal zone broadcaster to preserve visibility/spawn rules.
+            PChar->loc.zone->UpdateEntityPacket(PChar, ENTITY_UPDATE, UPDATE_POS);
+            // Only position was sent; leave HP, equipment and other updates pending.
+            PChar->updatemask &= ~UPDATE_POS;
+        }
+    }
 }
 
 auto planPath(CCharEntity* PChar, const position_t& goal) -> std::vector<position_t>
@@ -430,7 +451,7 @@ void stepMovement(Bot* b, float dt)
         }
     }
 
-    sendPosition(b, pos, rot, true);
+    sendPosition(b, pos, rot, true, dt);
     if (b->pathIdx >= b->path.size())
     {
         b->path.clear();

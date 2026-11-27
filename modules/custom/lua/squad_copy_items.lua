@@ -274,6 +274,9 @@ return
     [19102] = 'Main Gauche', -- Quest
     [19186] = 'Tiny Tathlum', -- Quest
     [19203] = 'War Hoop', -- AF
+    [23867] = 'Forever Patch', -- Gift (given once)
+    [23868] = 'Forever Track Pants', -- Gift (given once)
+    [25725] = 'Forever Beta Shirt', -- Gift (given once)
     [27556] = 'Echad Ring', -- Quest
     [28540] = 'Warp Ring', -- Quest
 }

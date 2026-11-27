@@ -95,7 +95,8 @@ local function questgiver(path)
             break
         end
 
-        local name, x, y, z, zone = line:match('^%-%-%s*([^:]-)%s*:%s*!pos%s+(%-?[%d%.]+)%s+(%-?[%d%.]+)%s+(%-?[%d%.]+)%s+(%d+)')
+        -- ("Name : !pos x y z zone"; a few files write "Name - !pos ...", Windurst 2-2 among them)
+        local name, x, y, z, zone = line:match('^%-%-%s*([^:]-)%s*[:%-]%s*!pos%s+(%-?[%d%.]+)%s+(%-?[%d%.]+)%s+(%-?[%d%.]+)%s+(%d+)')
         if name then
             found = { name = name, x = tonumber(x), y = tonumber(y), z = tonumber(z), zone = tonumber(zone) }
             break
@@ -122,19 +123,34 @@ local function buildCatalog()
         catalog.lines[line.key] = {}
     end
 
-    -- (the server returns a C++ list, not a Lua table: read it by index; on Windows its paths use backslashes)
-    local ok, raw = pcall(GetContainerFilenamesList)
-    if not ok or raw == nil then
-        note('quest catalog: the server gave no script list (' .. tostring(raw) .. '), so no quests or missions')
-        return catalog
-    end
-
+    -- (2026-11-26) The server hands this list over as a C++ list: it has a length and numbered entries, but it is
+    -- not a Lua table and ipairs does not walk it. On Windows its paths also use backslashes. Either one left the
+    -- catalog empty, so no bot ever did a real quest or mission (only the "job quest" trips, on the spot).
+    local ok, listed = pcall(GetContainerFilenamesList)
     local files = {}
-    for i = 1, #raw do
-        files[i] = (tostring(raw[i]):gsub('\\', '/'))
+    if ok and listed ~= nil then
+        local okCount, count = pcall(function()
+            return #listed
+        end)
+        for i = 1, okCount and tonumber(count) or 0 do
+            local okName, name = pcall(function()
+                return listed[i]
+            end)
+            if okName and type(name) == 'string' then
+                files[#files + 1] = name
+            end
+        end
     end
 
-    for _, file in ipairs(files) do
+    for _, listedName in ipairs(files) do
+        -- `file` (forward slashes) is for reading and for names; the script itself is asked for under the name the
+        -- server loaded it by (`listedName`), so it is the same object and not a second copy
+        local file = listedName:gsub('\\', '/')
+        local function load()
+            local okLoad, obj = pcall(require, (listedName:gsub('%.lua$', '')))
+            return okLoad and type(obj) == 'table' and obj or nil
+        end
+
         local folder, area = file:match('scripts/(%a+)/([%a]+)/')
         if folder == 'quests' then
             for logId, name in pairs(QUEST_LOGS) do
@@ -214,6 +230,10 @@ local function buildCatalog()
 
             return a.sub < b.sub
         end)
+        -- (a mission file with no "!pos" line would stop that nation's bots at it for good: where the last one was)
+        for i, m in ipairs(catalog.missions[nation]) do
+            m.giver = m.giver or (catalog.missions[nation][i - 1] and catalog.missions[nation][i - 1].giver)
+        end
     end
 
     note(string.format('quest catalog: %d quests, %d / %d / %d nation missions, %d Zilart / %d Promathia / %d Aht Urhgan missions',

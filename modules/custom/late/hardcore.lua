@@ -12,7 +12,8 @@
 --   Silver  the Silver profile; the same as Steel, but when it is knocked out the character is locked for good: it can't
 --           log in, it is on the memorial, and the launcher deletes it after 7 days (a GM can restore it in that time).
 --
--- "Knocked out" means HP 0, even if it is raised afterwards. A crash or a disconnect is not a death.
+-- "Knocked out" means HP 0, even if it is raised afterwards. A crash or a disconnect is not a death, and neither is
+-- the character's own Mijin Gakure (2026-11-26, see "deaths" below).
 -- Every 10 levels on a job (10, 20, ... 70), once per job: random cosmetics in the delivery box, 1 for Iron, 2 for Steel, 3 for Silver and Randomized.
 -- Milestones, Steel delevels and Silver deaths are announced to the whole world, written to
 -- hardcore_out.txt for the launcher (the hub and Stinkshell), and the hub shows other worlds' lines from hardcore_in.txt.
@@ -1581,12 +1582,36 @@ end
 -----------------------------------
 -- deaths
 -----------------------------------
+-- (2026-11-26, the user; Hasuko and Capt. Destro asked in #general) Mijin Gakure knocks its own user out by design, so
+-- it does not count: no death counted, no Steel delevel, no Silver or permadeath end. The ability marks the character
+-- just before it knocks them out; the death right after reads the mark once. A mark older than MIJIN_WINDOW seconds
+-- is worth nothing, so it cannot be saved up for a later death.
+local MIJIN_VAR    = '[HC]Mijin'
+local MIJIN_WINDOW = 10
+
+m:addOverride('xi.job_utils.ninja.useMijinGakure', function(player, target, ability, action)
+    if player and player:isPC() then
+        player:setLocalVar(MIJIN_VAR, os.time())
+    end
+
+    return super(player, target, ability, action)
+end)
+
 m:addOverride('xi.player.onPlayerDeath', function(player)
     super(player)
 
     local mode = H.mode(player)
     if mode == 0 or isBot(player) then
         return
+    end
+
+    local mijin = player:getLocalVar(MIJIN_VAR)
+    if mijin ~= 0 then
+        player:setLocalVar(MIJIN_VAR, 0)
+        if os.time() - mijin <= MIJIN_WINDOW then
+            tell(player, H.modeName(mode) .. ': Mijin Gakure does not count as a knock-out.')
+            return
+        end
     end
 
     player:setCharVar(VAR_DEATHS, player:getCharVar(VAR_DEATHS) + 1)

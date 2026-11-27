@@ -50,10 +50,92 @@ R.JOB_IDS =
 -- What squad.lua's ruleAction understands, and whether the action needs a name
 -- (WotG, 2026-11-22) waltz = the best Curing Waltz, samba = the best samba, storm = the storm of the day, helix = the
 -- helix of the day (the engine's HIGHEST_WALTZ, BEST_SAMBA, STORM_DAY and HELIX_DAY choices; DNC and SCH)
-local ACTION_KINDS = { spell = true, family = true, ja = true, ranged = false, nuke = false, burst = false,
+-- (F10, 2026-11-27) burstcap = { 'burstcap', n }: a magic burst of at most tier n (1-6); its own kind, so an older server
+-- refuses it instead of bursting with no cap
+local ACTION_KINDS = { spell = true, family = true, ja = true, ranged = false, nuke = false, burst = false, burstcap = 'tier',
                        waltz = false, samba = false, storm = false, helix = false }
 -- the job ability the waltz and samba actions need (main or sub job at its level), checked like a named job ability
 local ACTION_JA = { waltz = 'CURING_WALTZ', samba = 'DRAIN_SAMBA' }
+R.ACTION_KINDS = ACTION_KINDS
+R.MAX_BURST_TIER = 6
+
+-----------------------------------
+-- (F22, 2026-11-27) more conditions, each about a subject. A rule may have
+--   conds = { { NAME, arg }, { NAME, arg, of = 'SELF' }, ... }   up to R.MAX_CONDS, all of them must hold (AND)
+-- instead of cond / cond2. of: 'TARGET' (the rule's target, the default), 'SELF' (the mate acting), 'ENEMY' (the mate's
+-- combat target). The action's target is not changed by a subject. A rule with cond / cond2 keeps exactly its old meaning
+-- (both read the rule's target). Writers keep the old shape whenever it fits (squad_rulesets_store, the editor), so only a
+-- rule that needs F22 is written as conds: an older server finds no cond there and refuses that set, out loud.
+-- (F18) wake = true: "Wake to act": the rule may run while the mate rests in a fight.
+-----------------------------------
+R.MAX_CONDS = 4
+R.SUBJECTS = { TARGET = 0, SELF = 1, ENEMY = 2 }
+R.SUBJECT_STEP = 0x1000
+-- conditions that do not read a subject (a subject on them would mean nothing)
+R.SUBJECTLESS = { ALWAYS = true, RANDOM = true, TIMER = true, PARTY_COUNT = true, ENEMY_COUNT = true, ENEMY_FAMILY = true,
+                  PT_HAS_TANK = true, NOT_PT_HAS_TANK = true, JA_ON_COOLDOWN = true }
+
+-- (F22 / F20 / F21 / F10 / F18) true when xi_map has the feedback batch's engine (squad.cpp registers SquadCondSubjectEngine)
+function R.subjectReady()
+    return type(rawget(_G, 'SquadCondSubjectEngine')) == 'function'
+end
+
+-- a rule's conditions as one list, old shape or new: { { NAME, arg[, of] }, ... } (empty for a broken rule)
+function R.condList(rule)
+    if type(rule) ~= 'table' then
+        return {}
+    end
+
+    if type(rule.conds) == 'table' then
+        return rule.conds
+    end
+
+    local out = {}
+    if rule.cond ~= nil then
+        out[1] = rule.cond
+        if rule.cond2 ~= nil then
+            out[2] = rule.cond2
+        end
+    end
+
+    return out
+end
+
+-- true when the rule needs the new shape (more than two conditions, or a subject other than the target)
+function R.needsConds(list)
+    if #list > 2 then
+        return true
+    end
+
+    for _, c in ipairs(list) do
+        if type(c) == 'table' and c.of ~= nil and c.of ~= 'TARGET' then
+            return true
+        end
+    end
+
+    return false
+end
+
+-- write a list back in the shape that fits: cond / cond2 when it can, else conds (the rule is changed in place)
+function R.setConds(rule, list)
+    rule.cond, rule.cond2, rule.conds = nil, nil, nil
+    if R.needsConds(list) then
+        rule.conds = list
+    else
+        for _, c in ipairs(list) do
+            c.of = nil
+        end
+
+        rule.cond, rule.cond2 = list[1], list[2]
+    end
+
+    return rule
+end
+
+-- the engine's condition id for a subject: id + subject * SUBJECT_STEP
+function R.subjectId(id, of)
+    return id + (R.SUBJECTS[of or 'TARGET'] or 0) * R.SUBJECT_STEP
+end
 
 -- The argument each condition takes, as gambits_container.cpp CheckTrigger reads it (condition_arg is a uint32, so a
 -- negative number would wrap around; the TP and HP checks cast it to int16):
@@ -89,6 +171,9 @@ R.CONDITIONS =
     CASTING_ELE_MA_AOE = 'none', NEED_ELE_BAREFFECT = 'none',
     NO_SAMBA = 'none', NO_STORM = 'none', NO_MAX_RUNE = 'none', HAS_RUNES = 'none',
     HAS_MP = 'none', HAS_MP_MPP_LT = { 0, 100 }, HAS_MP_MPP_GTE = { 0, 100 },               -- false without an MP pool
+    -- (F20, 2026-11-27) the target has an effect Erase can remove now: the Erasable flag AND a duration (Erase's own check),
+    -- so a permanent effect never makes an Erase rule repeat. Needs the feedback batch's map server (R.subjectReady).
+    ERASABLE = 'none',
     JA_ON_COOLDOWN = 'ja',
     -- (job expansion) a modifier of the target below a number: { mod = NAME, below = n }, NAME one of R.MODS
     MOD_LT = 'mod',
@@ -178,6 +263,8 @@ R.ENGINE_NAMES = { HAS_MP = true, HAS_MP_MPP_LT = true, HAS_MP_MPP_GTE = true, J
 R.ENGINE2_NAMES = { MOD_LT = true }
 -- ... and the ones that need the community feedback milestone's map server (F1, F2)
 R.ENGINE3_NAMES = { ENEMY_FAMILY = true, PARTY_COUNT = true, ENEMY_COUNT = true }
+-- ... and the feedback batch B7-F24's map server (F20 ERASABLE, F21 ENEMY_ADD; subjects, burstcap and wake are checked apart)
+R.ENGINE4_NAMES = { ERASABLE = true, ENEMY_ADD = true }
 
 -- true when xi_map has that batch: its squad.cpp registers SquadApplyWeaponSkills (built from the same source)
 function R.engineReady()
@@ -243,6 +330,7 @@ R.REFUSED_CONDITIONS =
 {
     SUB_ANIMATION   = 'it compares an internal animation number, which has no meaning in a rule',
     VAL_URIEL_CHECK = 'it is a special check for one trust and assumes its master is in battle',
+    WAKE            = 'it is the engine\'s mark for a rule that may wake a resting mate: set wake = true on the rule instead', -- (F18)
 }
 
 local lastProblems = nil -- the problem text printed last, so an unchanged broken file is not logged on every call
@@ -292,6 +380,33 @@ local function conditionProblem(cond)
 
     if R.ENGINE3_NAMES[name] and not R.engine3Ready() then
         return name .. ' needs the updated map server (xi_map, enemy family and count conditions)'
+    end
+
+    if R.ENGINE4_NAMES[name] and not R.subjectReady() then
+        return name .. ' needs the updated map server (xi_map, feedback batch)'
+    end
+
+    -- (F22) the subject: only the keys 1, 2 and of
+    for k in pairs(cond) do
+        if k ~= 1 and k ~= 2 and k ~= 'of' then
+            return 'a condition takes { NAME, argument, of = SELF|ENEMY|TARGET } only'
+        end
+    end
+
+    if cond.of ~= nil then
+        if R.SUBJECTS[cond.of] == nil then
+            return 'of must be TARGET, SELF or ENEMY'
+        end
+
+        if cond.of ~= 'TARGET' then
+            if R.SUBJECTLESS[name] then
+                return name .. ' does not read a subject (leave out of)'
+            end
+
+            if not R.subjectReady() then
+                return 'a condition about SELF or ENEMY needs the updated map server (xi_map, feedback batch)'
+            end
+        end
     end
 
     if ai ~= nil and ai.c ~= nil and ai.c[name] == nil then
@@ -587,6 +702,8 @@ function R.ruleProblems(rule)
         out[#out + 1] = 'unknown target ' .. rule.target
     elseif R.ENGINE_NAMES[rule.target] and not R.engineReady() then
         out[#out + 1] = 'the target ' .. rule.target .. ' needs the updated map server (xi_map)'
+    elseif R.ENGINE4_NAMES[rule.target] and not R.subjectReady() then
+        out[#out + 1] = 'the target ' .. rule.target .. ' needs the updated map server (xi_map, feedback batch)'
     end
 
     local roleWhy = R.roleFilterProblem(rule)
@@ -594,22 +711,68 @@ function R.ruleProblems(rule)
         out[#out + 1] = roleWhy
     end
 
-    local problem = conditionProblem(rule.cond)
-    if problem then
-        out[#out + 1] = 'cond: ' .. problem
+    local problem
+    if rule.conds ~= nil then
+        -- (F22) the new shape: 1-4 conditions, and no cond / cond2 beside it
+        if rule.cond ~= nil or rule.cond2 ~= nil then
+            out[#out + 1] = 'conds replaces cond and cond2: use one or the other'
+        end
+
+        local okList, n = type(rule.conds) == 'table', 0
+        for k in pairs(okList and rule.conds or {}) do
+            n = n + 1
+            okList = okList and type(k) == 'number'
+        end
+
+        if not okList or n < 1 or n > R.MAX_CONDS or #rule.conds ~= n then
+            out[#out + 1] = string.format('conds must be a list of 1-%d conditions', R.MAX_CONDS)
+        else
+            for i, c in ipairs(rule.conds) do
+                problem = conditionProblem(c)
+                if problem then
+                    out[#out + 1] = string.format('conds[%d]: %s', i, problem)
+                end
+            end
+        end
+    else
+        problem = conditionProblem(rule.cond)
+        if problem then
+            out[#out + 1] = 'cond: ' .. problem
+        end
+
+        if rule.cond2 ~= nil then
+            problem = conditionProblem(rule.cond2)
+            if problem then
+                out[#out + 1] = 'cond2: ' .. problem
+            end
+        end
+
+        -- (F22) a subject needs the conds shape (cond / cond2 always meant the rule's target)
+        for _, c in ipairs({ rule.cond, rule.cond2 }) do
+            if type(c) == 'table' and c.of ~= nil and c.of ~= 'TARGET' then
+                out[#out + 1] = 'a condition with of = ' .. tostring(c.of) .. ' goes in conds'
+            end
+        end
     end
 
-    if rule.cond2 ~= nil then
-        problem = conditionProblem(rule.cond2)
-        if problem then
-            out[#out + 1] = 'cond2: ' .. problem
+    if rule.wake ~= nil then
+        if type(rule.wake) ~= 'boolean' then
+            out[#out + 1] = 'wake must be true or false'
+        elseif rule.wake and not R.subjectReady() then
+            out[#out + 1] = 'Wake to act needs the updated map server (xi_map, feedback batch)'
         end
     end
 
     local action = rule.action
     local named = type(action) == 'table' and ACTION_KINDS[action[1]]
     if named == nil then
-        out[#out + 1] = 'action must be { spell|family|ja, NAME } or { ranged|nuke|burst|waltz|samba|storm|helix }'
+        out[#out + 1] = 'action must be { spell|family|ja, NAME }, { burstcap, tier } or { ranged|nuke|burst|waltz|samba|storm|helix }'
+    elseif named == 'tier' then
+        if not isWhole(action[2], 1, R.MAX_BURST_TIER) then
+            out[#out + 1] = string.format('burstcap needs the highest tier, 1-%d', R.MAX_BURST_TIER)
+        elseif not R.subjectReady() then
+            out[#out + 1] = 'a burst tier cap needs the updated map server (xi_map, feedback batch)'
+        end
     elseif named and not isName(action[2]) then
         out[#out + 1] = 'action ' .. action[1] .. ' needs a NAME'
     elseif action[1] == 'ja' then

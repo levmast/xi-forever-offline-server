@@ -23,7 +23,9 @@ if SQUAD_PRINT_RAW == nil then
 end
 -----------------------------------
 
-local MAX_SLOTS = 6         -- squad mates you can keep
+-- (2026-11-26, the user) 7 mates to keep, was 6. Only how many you can own: the party still holds 6 (MAX_ACTIVE below).
+-- The launcher's New mate uses the same number (MAX_SLOTS in launcher_squad.py): change both together.
+local MAX_SLOTS = 7         -- squad mates you can keep
 local MAX_ACTIVE = 5        -- a party holds 6 including you
 local MAX_LEVEL = 75        -- 75-era server
 local SUB_UNLOCK_LEVEL = 18 -- sub job unlocks at main level 18, like retail
@@ -994,6 +996,35 @@ function SQUAD_CAMPX.mpNeed(player, trust, healerSet)
     return CAMP_READY_MP
 end
 
+-- (B10, 2026-11-27) a person in the party (you, your second character; not a bot player, which keeps its own rule) counts
+-- as a healer for the Healer MP setting when their main job is White Mage, the same job rule the mates fall back to.
+-- Returns the MP (%) they need, or nil (no setting, not a healer). Resting does not make them ready: it is how the MP
+-- comes back, so the puller waits for a resting healer too. `!squad camp wait` is a separate rule and stays as it is.
+function SQUAD_CAMPX.personHealerNeed(player, member)
+    local want = player:getCharVar('SQUAD_PULL_HEALER_MP')
+    if want <= 0 or member:getObjType() ~= xi.objType.PC or (BotIsBot and BotIsBot(member:getID())) then
+        return nil
+    end
+
+    if member:getMainJob() ~= xi.job.WHM or member:getMaxMP() <= 0 then
+        return nil
+    end
+
+    return math.min(100, want)
+end
+
+-- (B10) the first person who is a healer below the Healer MP setting: name, MP %, need; nil when none
+function SQUAD_CAMPX.personHealerShort(player)
+    for _, member in pairs(player:getPartyWithTrusts() or {}) do
+        local need = SQUAD_CAMPX.personHealerNeed(player, member)
+        if need and member:isAlive() and percentOf(member, 'getMP', 'getMaxMP') < need then
+            return member:getName(), percentOf(member, 'getMP', 'getMaxMP'), need
+        end
+    end
+
+    return nil
+end
+
 function SQUAD_CAMPX.healerSet(player, trusts)
     if player:getCharVar('SQUAD_PULL_HEALER_MP') <= 0 then
         return nil
@@ -1013,6 +1044,11 @@ function SQUAD_CAMPX.notReady(player, trusts)
         if member:getObjType() == xi.objType.PC and squadCampWaitsFor(player, member) then
             return member:getName() .. ' needs HP'
         end
+    end
+
+    local pName, pMp, pNeed = SQUAD_CAMPX.personHealerShort(player)
+    if pName then
+        return string.format('%s (healer) MP %d%% (needs %d%% MP)', pName, pMp, pNeed)
     end
 
     local healers = SQUAD_CAMPX.healerSet(player, trusts)
@@ -1057,6 +1093,15 @@ function SQUAD_CAMPX.push(player, force)
             return
         end
 
+        -- (F23) the pull range, on its own line before campst (an older menu ignores it; adding it to campst would break that
+        -- menu's reading)
+        local rline = SQUAD_CAMPX.rangeLine(player)
+        SQUAD_CAMPX.lastRange = SQUAD_CAMPX.lastRange or {}
+        if force or SQUAD_CAMPX.lastRange[player:getID()] ~= rline then
+            SQUAD_CAMPX.lastRange[player:getID()] = rline
+            say(player, rline)
+        end
+
         local line = SQUAD_CAMPX.line(player)
         SQUAD_CAMPX.last = SQUAD_CAMPX.last or {}
         if force or SQUAD_CAMPX.last[player:getID()] ~= line then
@@ -1066,6 +1111,13 @@ function SQUAD_CAMPX.push(player, force)
     end)
 
     return ok
+end
+
+-- (F23, 2026-11-27) squadpanel:camprange|<yalms>|<1 = set with !squad camp range or the menu, 0 = the default>: the pull search
+-- radius from the camp (flat, CAMP_MAX_DY up or down). Not the camp's fight leash (30) or fight reach (20).
+function SQUAD_CAMPX.rangeLine(player)
+    local own = player:getCharVar('SQUAD_PULL_RANGE')
+    return string.format('squadpanel:camprange|%d|%d', campRange(player), (own >= CAMP_RANGE_LIMITS[1] and own <= CAMP_RANGE_LIMITS[2]) and 1 or 0)
 end
 
 -- F5: the puller may fetch the next monster while the squad finishes this one, once it is at or under SQUAD_PULL_AT_HP (%).
@@ -1880,6 +1932,20 @@ local function campTick(mob)
         end
     end
 
+    -- (B10, 2026-11-27) you (or your second character) as the healer: White Mage main job, below the Healer MP setting, resting
+    -- or not. Before, only the mates counted, so a WHM player at 0 MP got the next pull.
+    local hName, hMp, hNeed = SQUAD_CAMPX.personHealerShort(player)
+    if hName then
+        if not c.waitSaid then
+            c.waitSaid = true
+            campSay(player, puller, 'waiting a bit, need hp/mp')
+        end
+
+        squadCampWhy(c, string.format('waiting: %s (healer) MP %d%% (needs %d%% MP, the Healer MP setting)', hName, hMp, hNeed))
+        c.nextPull = now + 5
+        return
+    end
+
     -- (F6, 2026-11-25) the healers' MP need is SQUAD_PULL_HEALER_MP when it is set (SQUAD_CAMPX.mpNeed); unset, CAMP_READY_MP for all
     local healerSet = SQUAD_CAMPX.healerSet(player, trusts)
     for _, trust in ipairs(trusts) do
@@ -2683,8 +2749,15 @@ function squadGearIsRare(itemId)
     return ok and type(flags) == 'number' and bit.band(flags, rare) ~= 0
 end
 
--- what may go in Sub beside this Main: nil = fine, else the reason (main/sub item infos from GetSquadItemInfo)
-function squadSubConflict(mainInfo, subInfo)
+-- (2026-11-26, Tetsu: mates held a second weapon without a Ninja support job) Dual Wield as the era has it: a Ninja of
+-- level 10 or more, as the main job or as the support job.
+function squadCanDualWield(mjob, mlvl, sjob, slvl)
+    return (mjob == 13 and (mlvl or 0) >= 10) or (sjob == 13 and (slvl or 0) >= 10)
+end
+
+-- what may go in Sub beside this Main: nil = fine, else the reason (main/sub item infos from GetSquadItemInfo).
+-- dual: false = this mate has no Dual Wield (a second weapon is refused); nil or true = not checked / it has.
+function squadSubConflict(mainInfo, subInfo, dual)
     if subInfo == nil or not subInfo.valid then
         return nil
     end
@@ -2697,13 +2770,15 @@ function squadSubConflict(mainInfo, subInfo)
         return 'hand-to-hand weapons take both hands'
     elseif grip then
         return 'a grip needs a two-handed weapon in Main'
+    elseif dual == false and (subInfo.shield or 0) == 0 and (subInfo.skill or 0) > 0 then
+        return 'a second weapon takes Dual Wield (a Ninja of level 10 or more, as the main or the support job)'
     end
 
     return nil
 end
 
 -- !squad equip check: worn = the mate's gear for the job {slot = itemId}. Returns nil (fine), or the reason it is refused
-function squadGearConflict(worn, slot, itemId, info)
+function squadGearConflict(worn, slot, itemId, info, dual)
     worn = worn or {}
     if squadGearIsRare(itemId) then
         for s = 0, 15 do
@@ -2715,14 +2790,14 @@ function squadGearConflict(worn, slot, itemId, info)
 
     if slot == 1 then
         local mainId = worn[0]
-        return squadSubConflict(mainId and GetSquadItemInfo(mainId) or nil, info)
+        return squadSubConflict(mainId and GetSquadItemInfo(mainId) or nil, info, dual)
     end
 
     return nil
 end
 
 -- callMate: leaves out pieces that cannot go together (saved before the check existed). Returns the outfit and a note.
-function squadOutfitFix(outfit)
+function squadOutfitFix(outfit, dual)
     local dropped = {}
     local seen = {}
     for s = 0, 15 do
@@ -2739,7 +2814,7 @@ function squadOutfitFix(outfit)
 
     if outfit[1] ~= nil and outfit[1] ~= 0 then
         local ok, why = pcall(function()
-            return squadSubConflict(outfit[0] and GetSquadItemInfo(outfit[0]) or nil, GetSquadItemInfo(outfit[1]))
+            return squadSubConflict(outfit[0] and GetSquadItemInfo(outfit[0]) or nil, GetSquadItemInfo(outfit[1]), dual)
         end)
         if ok and why then
             outfit[1] = nil
@@ -2949,6 +3024,14 @@ function squadTeamTick(mob)
 end
 
 local function callMate(player, mate)
+    -- (2026-11-26, ChocoKings: "calling the squad after being charmed: your squad shows up dead and 20-30 sec d/c after")
+    -- A charmed player fights for the monster for as long as the charm lasts, and a mate made for them then comes out
+    -- on the wrong side: it arrived dead and the server went down shortly after. No calls until the charm is over.
+    if player:hasStatusEffect(xi.effect.CHARM_I) or player:hasStatusEffect(xi.effect.CHARM_II) then
+        say(player, 'You cannot call your squad while you are charmed.')
+        return
+    end
+
     -- (2026-11-25) Ventures: a mate out on a venture from the XIFO app can't be called (squad_ventures.lua)
     if type(xi.squad.ventures) == 'table' then
         local away = xi.squad.ventures.away(player, mate)
@@ -3001,9 +3084,9 @@ local function callMate(player, mate)
         mate.equip[mate.mjob], squadLockstyleGet(player, mate.id), main, synced,
         itemLevel, SQUAD_LS_SLOTS, STARTER_MARK)
 
-    local okFix, _, fixed = pcall(function() return squadOutfitFix(outfit) end)
+    local okFix, _, fixed = pcall(function() return squadOutfitFix(outfit, squadCanDualWield(mate.mjob, main, sub, subLevel)) end)
     if okFix and fixed then
-        say(player, string.format('%s: some saved gear cannot be worn together (a Rare item twice, or Sub not fitting Main) and was left off. Check !squad gear.', mate.name))
+        say(player, string.format('%s: some saved gear cannot be worn together (a Rare item twice, Sub not fitting Main, or a second weapon without Dual Wield) and was left off. Check !squad gear.', mate.name))
     end
 
     -- (Gambits weapon skill settings) per mate and main job; without a Gambits setting the !squad ws vars, as before
@@ -3811,6 +3894,173 @@ xi.squad.attackOrder = function(player, stop)
     return true
 end
 
+-----------------------------------
+-- (F18, 2026-11-27) Rest in fights (!squad restfight, the Squads menu). Global table: this file is at Lua's limit for locals.
+-- Below its MP setting, with nothing attacking it, a mate sits down while the party fights (at its camp, or near you when it
+-- follows): the trust controller keeps it out of the fight while SQUAD_REST_FIGHT_ON is set and runs only its rules marked
+-- Wake to act. One that acts stands it up for that action (SQUAD_REST_FIGHT_ON = 2, SQUAD_REST_WOKE = when): it stays out of
+-- the fight, still only its Wake to act rules run, and it sits down again RESIT_SEC after the action, once it is done (as a
+-- player who stops /heal for a Cure and rests again: the 20 s start over). Like a player's /heal: the first recovery after
+-- 20 s, then every 10 s (the squad's resting amount). It stands up when hit, when moved, when you go away, when the fight is over, or at the
+-- setting + BAND % MP (or full); after an interruption it waits COOLDOWN s before it sits again, so it never bobs at the
+-- threshold. A resting healer still counts for the camp's Healer MP (B10). A Summoner releases its avatar first.
+-----------------------------------
+SQUAD_F18 = SQUAD_F18 or {}
+SQUAD_F18.FIRST_SEC = 20
+SQUAD_F18.EVERY_SEC = 10
+SQUAD_F18.BAND      = 20
+SQUAD_F18.COOLDOWN  = 15
+SQUAD_F18.RESIT_SEC = 3    -- after a Wake to act action: down again this long after it started, once the action is over
+SQUAD_F18.NEAR     = 8    -- yalms from its camp, or from you, it may sit down at
+SQUAD_F18.AWAY      = 12   -- following you: you this far away = it gets up and follows
+
+function SQUAD_F18.partyFighting(master)
+    if master:isEngaged() then
+        return true
+    end
+
+    for _, mate in ipairs(squadTrusts(master)) do
+        if mate:isEngaged() then
+            return true
+        end
+    end
+
+    return false
+end
+
+function SQUAD_F18.stop(mob, why, interrupted)
+    if mob:getLocalVar('SQUAD_REST_FIGHT_ON') == 0 and mob:getAnimation() ~= xi.animation.HEALING then
+        return
+    end
+
+    mob:setLocalVar('SQUAD_REST_FIGHT_ON', 0)
+    if mob:getAnimation() == xi.animation.HEALING then
+        mob:setAnimation(xi.animation.NONE)
+    end
+
+    if interrupted then
+        mob:setLocalVar('SQUAD_RF_NEXT', os.time() + SQUAD_F18.COOLDOWN)
+    end
+
+    print(string.format('[squad] %s stops resting in the fight: %s', mob:getPacketName(), tostring(why)))
+end
+
+-- one tick; true while the mate rests in a fight (the rest of restTick waits)
+function SQUAD_F18.tick(mob, master, campHere)
+    local threshold = mob:getLocalVar('SQUAD_RESTFIGHT')
+    local state = mob:getLocalVar('SQUAD_REST_FIGHT_ON') -- 0 = not resting, 1 = sitting, 2 = up for a Wake to act action
+    local on = state ~= 0
+    if threshold <= 0 or type(rawget(_G, 'SquadFoesOn')) ~= 'function' then
+        if on then
+            SQUAD_F18.stop(mob, 'turned off', false)
+        end
+
+        return false
+    end
+
+    local now = os.time()
+    local fighting = SQUAD_F18.partyFighting(master)
+    local maxMp = mob:getMaxMP()
+    local mpp = maxMp > 0 and math.floor(mob:getMP() * 100 / maxMp) or 100
+    local p, mp = mob:getPos(), master:getPos()
+    local c = campHere(master)
+    local function nearSpot()
+        if c then
+            return math.sqrt((p.x - c.x) ^ 2 + (p.z - c.z) ^ 2) <= SQUAD_F18.NEAR
+        end
+
+        return math.sqrt((p.x - mp.x) ^ 2 + (p.z - mp.z) ^ 2) <= SQUAD_F18.NEAR
+    end
+
+    if on then
+        local why = nil
+        if not fighting then
+            why = 'the fight is over'
+        elseif mob:getHP() < mob:getLocalVar('SQUAD_RF_HP') then
+            why = 'it was hit'
+        elseif math.sqrt((p.x - (mob:getLocalVar('SQUAD_RF_X') / 100 - 1000)) ^ 2 + (p.z - (mob:getLocalVar('SQUAD_RF_Z') / 100 - 1000)) ^ 2) > 1.5 then
+            why = 'it was moved'
+        elseif SquadFoesOn(mob) > 0 then
+            why = 'a monster is on it'
+        elseif not c and math.sqrt((p.x - mp.x) ^ 2 + (p.z - mp.z) ^ 2) > SQUAD_F18.AWAY then
+            why = 'you went away'
+        elseif mpp >= math.min(100, threshold + SQUAD_F18.BAND) then
+            why = 'its MP is back'
+        end
+
+        if why then
+            SQUAD_F18.stop(mob, why, why ~= 'its MP is back' and why ~= 'the fight is over')
+            return false
+        end
+
+        if state == 2 then
+            -- (up for a Wake to act action) down again once the action is over: still out of the fight meanwhile, and only
+            -- its Wake to act rules run (the trust controller); no recovery while it stands
+            local okA, action = pcall(function() return mob:getCurrentAction() end)
+            local idle = not okA or action == 16 or action == 1 or action == 0
+            if idle and now - mob:getLocalVar('SQUAD_REST_WOKE') >= SQUAD_F18.RESIT_SEC then
+                mob:setLocalVar('SQUAD_REST_FIGHT_ON', 1)
+                mob:setLocalVar('SQUAD_REST_AT', now + SQUAD_F18.FIRST_SEC)
+                mob:setAnimation(xi.animation.HEALING)
+                print(string.format('[squad] %s rests again after its Wake to act rule', mob:getPacketName()))
+            end
+
+            mob:setLocalVar('SQUAD_RF_HP', mob:getHP())
+            return true
+        end
+
+        if now >= mob:getLocalVar('SQUAD_REST_AT') then
+            mob:setLocalVar('SQUAD_REST_AT', now + SQUAD_F18.EVERY_SEC)
+            local lvl = mob:getMainLvl()
+            if mob:getHP() < mob:getMaxHP() then
+                mob:addHP(math.max(10 + lvl, math.floor(mob:getMaxHP() * 10 / 100)))
+            end
+
+            if maxMp > 0 and mob:getMP() < maxMp then
+                mob:addMP(math.max(12 + math.floor(lvl / 2), math.floor(maxMp * 10 / 100)))
+            end
+        end
+
+        mob:setLocalVar('SQUAD_RF_HP', mob:getHP()) -- (what it has now: any drop from here is a hit)
+        return true
+    end
+
+    -- (an older map server cleared SQUAD_REST_FIGHT_ON for a Wake to act action: then it fights, and not down again right away)
+    local woke = mob:getLocalVar('SQUAD_REST_WOKE')
+    if woke > 0 and now - woke < SQUAD_F18.COOLDOWN then
+        if mob:getAnimation() == xi.animation.HEALING then
+            mob:setAnimation(xi.animation.NONE)
+        end
+
+        return false
+    end
+
+    if not fighting or mpp >= threshold or now < mob:getLocalVar('SQUAD_RF_NEXT') or mob:getLocalVar('SQUAD_PULL_PHASE') ~= 0
+        or not nearSpot() or SquadFoesOn(mob) > 0 then
+        return false
+    end
+
+    local okA, action = pcall(function() return mob:getCurrentAction() end)
+    if okA and action ~= 16 and action ~= 1 and action ~= 0 then
+        return false -- (casting, a weapon skill ...: not in the middle of it)
+    end
+
+    if xi.squad.summoner and type(xi.squad.summoner.onRest) == 'function' and SquadHasPet(mob) then
+        pcall(xi.squad.summoner.onRest, mob)
+    end
+
+    mob:setLocalVar('SQUAD_REST_FIGHT_ON', 1)
+    mob:setLocalVar('SQUAD_REST_WOKE', 0)
+    mob:setLocalVar('SQUAD_REST_AT', now + SQUAD_F18.FIRST_SEC)
+    mob:setLocalVar('SQUAD_RF_HP', mob:getHP())
+    mob:setLocalVar('SQUAD_RF_X', math.floor((p.x + 1000) * 100))
+    mob:setLocalVar('SQUAD_RF_Z', math.floor((p.z + 1000) * 100))
+    mob:setAnimation(xi.animation.HEALING)
+    -- (no percent sign: the server's print reads the text as a format and drops a line with one)
+    print(string.format('[squad] %s rests in the fight (MP %d of 100, setting %d)', mob:getPacketName(), mpp, threshold))
+    return true
+end
+
 restTick = function(mob)
     local master = mob:getMaster()
     if master == nil or master:getObjType() ~= xi.objType.PC then
@@ -3826,6 +4076,11 @@ restTick = function(mob)
             fightRest.stop(mob, master)
         end
 
+        return
+    end
+
+    -- (F18) resting while the party fights comes first; when it is not on, everything below is as before
+    if SQUAD_F18.tick(mob, master, campHere) then
         return
     end
 
@@ -3994,7 +4249,10 @@ end
 
 -- Spell commands typed in party chat (see squad.cpp). result: cast, unknown, notready, notarget or busy
 xi.squad.onSpellCommand = function(player, trust, spellName, result)
-    local events = { cast = 'spellcast', unknown = 'spellunknown', notready = 'spellnotready', notarget = 'spellnotarget', busy = 'spellbusy' }
+    -- (B9 / B11) far / approach / stepin come from the rebuilt squad.cpp; squad_requests.lua says them in its own words, and with
+    -- its fixes off they map to the nearest old line
+    local events = { cast = 'spellcast', unknown = 'spellunknown', notready = 'spellnotready', notarget = 'spellnotarget', busy = 'spellbusy',
+        far = 'spellnotarget', approach = 'spellcast', stepin = 'spellcast' }
     local event = events[result]
     if event ~= nil then
         speak(player, trust:getPacketName(), event, { spell = prettySpellName(spellName) })
@@ -4588,6 +4846,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         say(player, SQUAD_CAMPX.line(player))
         SQUAD_CAMPX.last = SQUAD_CAMPX.last or {}
         SQUAD_CAMPX.last[player:getID()] = SQUAD_CAMPX.line(player)
+        -- (F23) the pull range
+        say(player, SQUAD_CAMPX.rangeLine(player))
+        SQUAD_CAMPX.lastRange = SQUAD_CAMPX.lastRange or {}
+        SQUAD_CAMPX.lastRange[player:getID()] = SQUAD_CAMPX.rangeLine(player)
 
         -- (servermenu 1.17) the bot players in your party, for the Puller list: campbots|<names, comma list or ->|<pulling bot or ->
         if BotIsBot then
@@ -4650,6 +4912,15 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             -- (2026-11-25) pos|<slot>|<0 normal, 1 behind, 2 ta>: the position chosen with !squad position; an older menu
             -- ignores the line
             say(player, string.format('squadpanel:pos|%d|%d', mate.slot, player:getCharVar('SQUAD_POS_' .. mate.id)))
+            -- (F18, 2026-11-27) rf|<slot>|<0 off, else the MP % under which it rests in fights>|<Wake to act rules of the mate
+            -- that is out, -1 when it is not out>: the menu warns when a mate out has none; an older menu ignores the line
+            local wakeRules = -1
+            for _, trust in ipairs(squadTrusts(player)) do
+                if trust:getLocalVar('SQUAD_ID') == mate.id then
+                    wakeRules = trust:getLocalVar('SQUAD_WAKE_RULES')
+                end
+            end
+            say(player, string.format('squadpanel:rf|%d|%d|%d', mate.slot, player:getCharVar('SQUAD_RESTFIGHT_' .. mate.id), wakeRules))
         end
         -- The addon channel (packets/c2s/0x1f0_addon_channel.h): when this build handles it, say so, so a window may send its commands as that packet
         -- instead of as chat lines. A build without the packet has no xi.addonChannel and says nothing, so the window keeps typing.
@@ -4663,7 +4934,10 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         -- (2026-11-25) matepos = !squad position (normal / behind / ta) and the pos| lines (servermenu 1.35), only with a
         -- map server that places mates by it (SquadPositionEngine, squad.cpp)
         local capPos = rawget(_G, 'SquadPositionEngine') ~= nil and ',matepos' or ''
-        say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove') .. capPos)
+        -- (2026-11-27) restfight = !squad restfight and the rf| lines (needs the map server that keeps a resting mate out of
+        -- the fight: SquadFoesOn); camprange = campst carries the pull range (F23)
+        local capRf = rawget(_G, 'SquadFoesOn') ~= nil and ',restfight' or ''
+        say(player, 'squadpanel:cap|' .. (SquadDismissMate ~= nil and 'reapply1,campmove' or 'campmove') .. capPos .. capRf .. ',camprange')
 
         -- (servermenu 1.8) what the puller goes for, and the kinds of monster around the camp
         if c then
@@ -4943,6 +5217,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
             if n and n >= CAMP_RANGE_LIMITS[1] and n <= CAMP_RANGE_LIMITS[2] then
                 player:setCharVar('SQUAD_PULL_RANGE', math.floor(n))
                 say(player, string.format('Your puller now goes for monsters up to %d yalms from camp.', math.floor(n)))
+                SQUAD_CAMPX.push(player, true) -- (F23: the menu's Pull range follows the command)
             else
                 say(player, string.format('Pull range is %d yalms. Change it with !squad camp range <%d-%d>.', campRange(player), CAMP_RANGE_LIMITS[1], CAMP_RANGE_LIMITS[2]))
             end
@@ -5029,13 +5304,20 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
             local want = player:getCharVar('SQUAD_PULL_HEALER_MP')
             local names = {}
+            -- (B10) you and your second character count too when your main job is White Mage (resting or not); with a healer mate
+            -- as well, everyone listed must reach it
+            for _, member in pairs(player:getPartyWithTrusts() or {}) do
+                if SQUAD_CAMPX.personHealerNeed(player, member) then
+                    names[#names + 1] = member:getName() .. ' (White Mage)'
+                end
+            end
             for _, trust in ipairs(SQUAD_CAMPX.healers(player, squadTrusts(player))) do
                 names[#names + 1] = trust:getPacketName()
             end
 
             if want > 0 then
                 say(player, string.format('Before a pull the healers need %d%% MP (the other mates %d%%). Healers now: %s. (!squad camp healermp default to go back)',
-                    want, SQUAD_CAMPX.READY_MP, #names > 0 and table.concat(names, ', ') or 'none out (no mate with the Role Healer and no White Mage): the setting does nothing'))
+                    want, SQUAD_CAMPX.READY_MP, #names > 0 and table.concat(names, ', ') or 'none (no White Mage in the party and no mate with the Role Healer): the setting does nothing'))
             else
                 say(player, string.format('Before a pull every mate with MP needs %d%% MP. !squad camp healermp <0-100> sets the healers\' own need.', SQUAD_CAMPX.READY_MP))
             end
@@ -5936,7 +6218,8 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
 
         -- (2026-11-22) checked against the rest of the outfit: a Rare item once, Sub that fits Main
         local wornNow = mate.equip[mate.mjob] or {}
-        local okC, clash = pcall(squadGearConflict, wornNow, slotIndex, itemId, info)
+        local canDual = squadCanDualWield(mate.mjob, levelsFor(mate, nil, player)) -- (main level, support job, its level)
+        local okC, clash = pcall(squadGearConflict, wornNow, slotIndex, itemId, info, canDual)
         if okC and clash then
             say(player, string.format('%s cannot wear that: %s.', mate.name, clash))
             return
@@ -5946,7 +6229,7 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         say(player, string.format('%s now wears %s (%s) as %s. Dismiss and call them again to apply.', mate.name, info.name, equipSlotNames[slotIndex], jobNames[mate.mjob]))
         if slotIndex == 0 and wornNow[1] ~= nil and wornNow[1] ~= 0 then
             -- a new Main takes off a Sub that no longer fits, like the game does for you
-            local okS, why = pcall(function() return squadSubConflict(info, GetSquadItemInfo(wornNow[1])) end)
+            local okS, why = pcall(function() return squadSubConflict(info, GetSquadItemInfo(wornNow[1]), canDual) end)
             if okS and why then
                 SetSquadEquip(mate.id, mate.mjob, 1, 0)
                 say(player, string.format('%s took off the Sub piece (%s).', mate.name, why))
@@ -6342,6 +6625,37 @@ commandObj.onTrigger = function(player, action, arg1, arg2, arg3, arg4, arg5, ar
         player:setCharVar('SQUAD_RANGE_' .. mate.id, choice)
         say(player, string.format('%s now fights %s. Dismiss and call them again to apply it.', mate.name,
             ({ [0] = 'at its job\'s usual distance', 'up close', 'from mid range (15 yalms)', 'from long range (20 yalms)' })[choice]))
+        return
+    elseif action == 'restfight' or action == 'rf' then
+        -- (F18, 2026-11-27) Rest in fights: !squad restfight <slot> off | <10-90>. Below that MP % the mate may stay out of a
+        -- fight and rest (nothing attacking it, at its camp spot or near you), first recovery after 20 s, then every 10 s.
+        -- It is up again at the setting + 20 % (or full), when hit, when moved, when you go away, when the fight ends, or
+        -- for one of its rules marked Wake to act. Stored as SQUAD_RESTFIGHT_<id> (0 = off, the default).
+        local said = string.lower(arg2 or '')
+        local n = tonumber(said)
+        if said ~= 'off' and (n == nil or n < 10 or n > 90) then
+            local now = player:getCharVar('SQUAD_RESTFIGHT_' .. mate.id)
+            say(player, string.format('%s: rest in fights %s. !squad restfight <slot> off | <10-90>', mate.name,
+                now > 0 and string.format('below %d%% MP', now) or 'off'))
+            return
+        end
+
+        local value = said == 'off' and 0 or math.floor(n)
+        player:setCharVar('SQUAD_RESTFIGHT_' .. mate.id, value)
+        local live = summonedMate(player, mate.id)
+        if live ~= nil then
+            live:setLocalVar('SQUAD_RESTFIGHT', value)
+            if value == 0 and SQUAD_F18 and SQUAD_F18.stop then
+                SQUAD_F18.stop(live, 'turned off', false)
+            end
+        end
+
+        say(player, value == 0 and string.format('%s fights through, as before (no resting in fights).', mate.name)
+            or string.format('%s rests in fights below %d%% MP when nothing attacks it, and is back at %d%%.', mate.name, value,
+                math.min(100, value + (SQUAD_F18 and SQUAD_F18.BAND or 20))))
+        if rawget(_G, 'SquadFoesOn') == nil then
+            say(player, '(This map server cannot keep a resting mate out of the fight yet: the choice is kept for when it can.)')
+        end
         return
     elseif action == 'position' or action == 'pos' then
         -- (2026-11-25) Where this mate stands in a fight: !squad position <slot> normal | behind | ta
@@ -6771,9 +7085,15 @@ local function classify(action)
 end
 
 -- A condition is { condition, value }, or a pair of those (see both). Changes the "HP below" threshold, wherever it is.
+-- (F22, 2026-11-27) a list of conditions may hold up to four; every one is mapped (before: only the first two were kept)
 local function mapHeal(condition, change)
     if type(condition[1]) == 'table' then
-        return { mapHeal(condition[1], change), mapHeal(condition[2], change) }
+        local out = {}
+        for i, part in ipairs(condition) do
+            out[i] = mapHeal(part, change)
+        end
+
+        return out
     end
 
     if condition[1] == ai.c.HPP_LT then
@@ -6783,19 +7103,19 @@ local function mapHeal(condition, change)
     return condition
 end
 
--- Adds "mana at least floor%" to a condition, or raises the one it already has. A pair of other conditions is left alone.
+-- Adds "mana at least floor%" to a condition, or raises the one it already has. A list of other conditions is left alone.
 local function withMpFloor(condition, floor)
     if type(condition[1]) == 'table' then
-        local first, second = condition[1], condition[2]
-        if first[1] == ai.c.MPP_GTE then
-            return { { ai.c.MPP_GTE, math.max(first[2], floor) }, second }
+        local out, raised = {}, false
+        for i, part in ipairs(condition) do
+            if not raised and part[1] == ai.c.MPP_GTE then
+                out[i], raised = { ai.c.MPP_GTE, math.max(part[2], floor) }, true
+            else
+                out[i] = part
+            end
         end
 
-        if second[1] == ai.c.MPP_GTE then
-            return { first, { ai.c.MPP_GTE, math.max(second[2], floor) } }
-        end
-
-        return condition
+        return out
     end
 
     if condition[1] == ai.c.MPP_GTE then
@@ -7098,7 +7418,8 @@ jobs[jobIds.RDM] =
         addGambit(mob, ai.t.MASTER, cond(ai.c.NOT_STATUS, 'REFRESH'), spell('REFRESH'))
         addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'PHALANX'), family('PHALANX'))
         addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'ENFIRE'), spell('ENFIRE'))
-        addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'EVASION_DOWN'), family('DISTRACT'), 60)
+        -- (B7, 2026-11-27) no Distract: a Seekers of Adoulin spell (Hurami: era). The mate's spell list still knows it, since
+        -- squad spell lists ignore the expansion switches (a separate issue); the default rules just never ask for it.
         addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'SLOW'), family('SLOW'), 60)
         addGambit(mob, ai.t.TARGET, cond(ai.c.NOT_STATUS, 'PARALYSIS'), family('PARALYZE'), 60)
         addGambit(mob, ai.t.SELF, cond(ai.c.NOT_STATUS, 'PROTECT'), family('PROTECT'))
@@ -7106,7 +7427,11 @@ jobs[jobIds.RDM] =
         addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'PROTECT'), family('PROTECT'))
         addGambit(mob, ai.t.PARTY, cond(ai.c.NOT_STATUS, 'SHELL'), family('SHELL'))
         -- A skillchain just landed: magic burst it (with MP to spare for cures)
-        addGambit(mob, ai.t.TARGET, both(cond(ai.c.MPP_GTE, 30), cond(ai.c.MB_AVAILABLE, 0)), { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE })
+        -- (F22, 2026-11-27) the MP check reads the Red Mage's own MP: it read the enemy's (a monster without MP is 0%, so
+        -- the burst never came). An older map server keeps the old rule.
+        local selfMp = type(rawget(_G, 'SquadCondSubjectEngine')) == 'function' and ai.SUBJECT_STEP ~= nil
+            and (ai.c.MPP_GTE + ai.SUBJECT_STEP * ai.subject.SELF) or ai.c.MPP_GTE
+        addGambit(mob, ai.t.TARGET, both(cond(selfMp, 30), cond(ai.c.MB_AVAILABLE, 0)), { ai.r.MA, ai.s.MB_ELEMENT, xi.magic.spellFamily.NONE })
         -- Now and then, after everything above: the best elemental spell the mob is weakest to, keeping MP for the rest
         addGambit(mob, ai.t.TARGET, cond(ai.c.MPP_GTE, 50), { ai.r.MA, ai.s.BEST_AGAINST_TARGET, 0 }, 30)
     end,
@@ -7668,6 +7993,15 @@ local function ruleAction(spec)
         return { ai.r.MA, ai.s.STORM_DAY, 0 }
     elseif kind == 'helix' then
         return { ai.r.MA, ai.s.HELIX_DAY, 0 }
+    elseif kind == 'burstcap' then
+        -- (F10, 2026-11-27) a magic burst of at most tier spec[2]: the engine's argument (0 = no cap, as 'burst')
+        local tier = tonumber(spec[2])
+        if tier == nil or tier < 1 or tier > 6 or type(rawget(_G, 'SquadCondSubjectEngine')) ~= 'function' then
+            print('[squad] burstcap needs a tier 1-6 and the updated map server - rule skipped')
+            return nil
+        end
+
+        return { ai.r.MA, ai.s.MB_ELEMENT, math.floor(tier) }
     end
 
     print(string.format('[squad] unknown action %s - rule skipped', tostring(kind)))
@@ -7690,9 +8024,42 @@ local function applyRules(mob, rules, isSub)
             if target == nil then
                 print(string.format('[squad] unknown target %s - rule skipped', tostring(rule.target)))
             else
-                local condition = ruleCondition(rule.cond, isSub)
-                if condition ~= nil and rule.cond2 ~= nil then
-                    condition = both(condition, ruleCondition(rule.cond2, isSub))
+                -- (F22, 2026-11-27) every condition of the rule (cond / cond2, or conds with up to 4), each read on its subject
+                -- (of = SELF / ENEMY: the condition id + subject * ai.SUBJECT_STEP); all must hold. One that cannot be built
+                -- leaves the whole rule out, as before. (F18) wake = true adds the WAKE marker: the rule may run while the mate
+                -- rests in a fight.
+                local okRs, Rs = pcall(require, 'modules/custom/lua/squad_rulesets')
+                local list = (okRs and type(Rs) == 'table' and Rs.condList) and Rs.condList(rule) or { rule.cond, rule.cond2 }
+                local parts, broken = {}, (#list == 0)
+                for _, spec in ipairs(list) do
+                    local c = ruleCondition(spec, isSub)
+                    if c == nil then
+                        broken = true
+                    else
+                        if type(spec) == 'table' and spec.of ~= nil and spec.of ~= 'TARGET' then
+                            if not (okRs and Rs.subjectReady and Rs.subjectReady()) then
+                                print('[squad] a condition about SELF or ENEMY needs the updated map server - rule skipped')
+                                broken = true
+                            else
+                                c = { Rs.subjectId(c[1], spec.of), c[2] }
+                            end
+                        end
+
+                        parts[#parts + 1] = c
+                    end
+                end
+
+                if rule.wake == true and ai.c.WAKE ~= nil and okRs and Rs.subjectReady and Rs.subjectReady() then
+                    parts[#parts + 1] = { ai.c.WAKE, 0 }
+                    if not broken then
+                        -- (F18) how many rules may run while it rests in a fight: the Squads menu warns when there are none
+                        mob:setLocalVar('SQUAD_WAKE_RULES', mob:getLocalVar('SQUAD_WAKE_RULES') + 1)
+                    end
+                end
+
+                local condition = nil
+                if not broken then
+                    condition = #parts == 1 and parts[1] or parts
                 end
 
                 -- (Gambits 0.3.3, Bard role targeting) include / exclude roles ride in the target argument's high byte
@@ -7759,6 +8126,7 @@ local function squadSpawn(mob)
     local posMaster = mob:getMaster()
     if posMaster ~= nil and mob:getLocalVar('SQUAD_ID') ~= 0 then
         mob:setLocalVar('SQUAD_POSITION', posMaster:getCharVar('SQUAD_POS_' .. mob:getLocalVar('SQUAD_ID')))
+        mob:setLocalVar('SQUAD_RESTFIGHT', posMaster:getCharVar('SQUAD_RESTFIGHT_' .. mob:getLocalVar('SQUAD_ID'))) -- (F18)
     end
 
     local main = jobs[mob:getMainJob()]
@@ -7795,6 +8163,7 @@ local function squadSpawn(mob)
     -- No set chosen, or the module missing: everything below runs exactly as before.
     local okRs, rulesets = pcall(require, 'modules/custom/lua/squad_rulesets')
     local customSet = okRs and type(rulesets) == 'table' and rulesets.forMob(mob) or nil
+    mob:setLocalVar('SQUAD_WAKE_RULES', 0) -- (F18) counted again by applyRules; the default job rules have none
     if customSet ~= nil then
         activeBehavior = (role == 'tank') and { role = role, mode = mode, ruleSet = true } or nil
         profileLevel = mob:getMainLvl()
@@ -8313,7 +8682,8 @@ end)
 m:addOverride('xi.experiencePoints.calculate', function(member, mob, data)
     -- (2026-11-21, delukard; Hurami: "the same as squad mates") below level 12 bot players in your party don't split
     -- your exp either: the share is worked out as if only the real players were there (party size and highest level).
-    if member:getObjType() == xi.objType.PC and member:getMainLvl() < 12 and BotIsBot and not BotIsBot(member:getID()) then
+    -- (2026-11-26, SprinklesAK) and the bot players themselves too: they fell behind you below level 12
+    if member:getObjType() == xi.objType.PC and member:getMainLvl() < 12 and BotIsBot then
         local real, highest, hasBot = 0, member:getMainLvl(), false
         for _, p in pairs(member:getParty()) do
             if p:getObjType() == xi.objType.PC and p:getZoneID() == mob:getZoneID() then

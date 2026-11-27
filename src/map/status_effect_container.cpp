@@ -878,6 +878,17 @@ void CStatusEffectContainer::DelStatusEffectsByFlag(xi::StatusEffectFlag flag, E
  *                                                                       *
  ************************************************************************/
 
+// XI: Forever Offline (F20, 2026-11-27): the one rule for "Erase can remove this", shared with EraseStatusEffect below
+static auto isErasableNow(const CStatusEffect& effect) -> bool
+{
+    return effect.HasEffectFlag(xi::StatusEffectFlag::Erasable) && effect.GetDuration() > 0s && !effect.isDeleted();
+}
+
+auto CStatusEffectContainer::HasErasableEffect() -> bool
+{
+    return std::ranges::any_of(m_StatusEffectSet, [](const auto& PStatusEffect) { return isErasableNow(*PStatusEffect); });
+}
+
 auto CStatusEffectContainer::EraseStatusEffect() -> xi::StatusEffect
 {
     TracyZoneScoped;
@@ -885,7 +896,7 @@ auto CStatusEffectContainer::EraseStatusEffect() -> xi::StatusEffect
     std::vector<CStatusEffect*> erasableList;
     for (const auto& PStatusEffect : m_StatusEffectSet)
     {
-        if (PStatusEffect->HasEffectFlag(xi::StatusEffectFlag::Erasable) && PStatusEffect->GetDuration() > 0s && !PStatusEffect->isDeleted())
+        if (isErasableNow(*PStatusEffect))
         {
             erasableList.emplace_back(PStatusEffect.get());
         }

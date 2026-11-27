@@ -34,6 +34,14 @@ m:addOverride('xi.server.onServerStart', function()
 
     -- Chocobo's Wounds: take the retail quest (real-time Timer) and set the wait after each feeding ourselves. The era
     -- module had replaced it with a Vana'diel day check; this keeps that wait in era mode, measured in real seconds.
+    -- modifyInteractionEntry loads the quest file again, so the era module's feeding check goes with its copy of the
+    -- quest: the feeding is the game's own, which reads Timer as a real time, and a Timer the era module wrote before
+    -- (a Vana'diel day number) counts as over.
+    -- (2026-11-27, Tetsu, Neet, Josh; 2026-11-26, Quaiton: the era waits again, or "it ain't hungry" for good, with
+    -- short waits on) Nothing here was wrong. From 2026-11-25 this was the 100th override of xi.server.onServerStart:
+    -- it stopped at its first global ("loop in gettable" in the map log), so the era module's quest stayed and Forge
+    -- Your Destiny kept its long wait too. Fixed in modules/module_utils.lua (applyOverride); the copy of the feeding
+    -- added here on 2026-11-26 never ran and was not needed, so it is gone again.
     local okC, errC = pcall(xi.module.modifyInteractionEntry, 'scripts/quests/jeuno/Chocobos_Wounds', function(quest)
         local finish = quest.sections[2][xi.zone.UPPER_JEUNO].onEventFinish
         for _, csid in ipairs({ 57, 58, 59, 60, 99 }) do

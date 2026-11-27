@@ -74,7 +74,10 @@
 -- within 120 s is dropped; nothing is written before that.
 -- This file only registers the command; it defines no globals.
 -----------------------------------
-local VERSION      = 11    -- 11 (community feedback milestone, 2026-11-25): ENEMY_FAMILY "FAMILY", PARTY_COUNT
+local VERSION      = 12    -- 12 (feedback batch B7-F24, 2026-11-27): the long rule form (16 fields: conditions 3 and 4, a
+                           --   subject suffix ".S" / ".E", FLAGS "w" = Wake to act), kind c = burst tier cap, catm "jmfs"
+                           --   offers ERASABLE and the target ENEMY_ADD; all of it needs the feedback batch's map server
+                           -- 11 (community feedback milestone, 2026-11-25): ENEMY_FAMILY "FAMILY", PARTY_COUNT
                            --   "CMP.n[.STATUS]", ENEMY_COUNT "CMP.n[.hp[.radius]]" (G.decodeCount); offered in catm "jmf"
                            --   as kinds y, p, q; saving them needs the map server that has them (R.engine3Ready)
                            -- 10 (UI milestone): hello carries capability words (G.caps), mates carries the live Rule
@@ -100,11 +103,13 @@ local MAX_DRAFTS   = 64    -- unfinished saves kept in memory at once (all chara
 local DRAFT_SECS   = 120
 local REPLY_MAX    = 140   -- bytes of one reply line; the game cuts a chat message after 150
 local SPELL_MAX_LV = 75    -- spells offered in the catalog: learnable at this level or below
-local ACTIONS      = { f = 'family', j = 'ja', s = 'spell', r = 'ranged', n = 'nuke', b = 'burst',
+-- (version 12, F10) c = burstcap: a magic burst of at most tier NAME (a number 1-6)
+-- (WotG, 2026-11-22) w/d/e/h = waltz, samba, storm, helix
+local ACTIONS      = { f = 'family', j = 'ja', s = 'spell', r = 'ranged', n = 'nuke', b = 'burst', c = 'burstcap',
                        w = 'waltz', d = 'samba', e = 'storm', h = 'helix' }
-local ACTION_CODE  = { family = 'f', ja = 'j', spell = 's', ranged = 'r', nuke = 'n', burst = 'b',
+local ACTION_CODE  = { family = 'f', ja = 'j', spell = 's', ranged = 'r', nuke = 'n', burst = 'b', burstcap = 'c',
                        waltz = 'w', samba = 'd', storm = 'e', helix = 'h' }
-local NAMED        = { family = true, ja = true, spell = true }  -- the kinds with a NAME (squad_rulesets.lua ACTION_KINDS)
+local NAMED        = { family = true, ja = true, spell = true, burstcap = true }  -- the kinds with a NAME (squad_rulesets.lua ACTION_KINDS)
 -- the targets the editor offers (ai.t names; the engine's job groups: TANK = PLD/RUN, CASTER = WHM BLM RDM BRD SMN BLU
 -- SCH GEO RUN, MELEE = the melee jobs, RANGED = RNG/COR; PARTY takes the first member in party order that matches;
 -- PARTY_LOWEST_HPP the member with the lowest HP% that matches - only with the batch's map server)
@@ -432,11 +437,38 @@ function G.joinTarget(target, include, exclude)
     return text
 end
 
+-- (version 12, 2026-11-27, F22 / F18 / F10) a rule may have 16 fields:
+--   on,TARGET,COND,ARG,COND2,ARG2,kind,NAME,RETRY,LEVEL,ID,COND3,ARG3,COND4,ARG4,FLAGS
+-- A condition name may end in ".S" (about the mate itself) or ".E" (about the mate's combat target): "MPP_GTE.S". FLAGS:
+-- "w" = Wake to act. Kind "c" = a magic burst of at most tier NAME (1-6, squad_rulesets.lua 'burstcap'). A rule that uses
+-- any of these is always sent with all 16 fields: an older server refuses the field count, an older addon shows it as
+-- "?" (read-only), so neither runs nor edits it without what it does not understand.
+G.SUBJECT_SUFFIX = { S = 'SELF', E = 'ENEMY' }
+G.SUFFIX_OF = { SELF = 'S', ENEMY = 'E' }
+
+local function condOf(name, arg)
+    if name == nil or name == '' then
+        return nil
+    end
+
+    local base, suffix = string.match(name, '^([A-Z][A-Z0-9_]*)%.([SE])$')
+    local c = { base or name, argValue(arg) }
+    if c[2] == nil then
+        c[2] = nil
+    end
+
+    if suffix ~= nil then
+        c.of = G.SUBJECT_SUFFIX[suffix]
+    end
+
+    return c
+end
+
 -- "1,PARTY,HPP_LT,50,,,f,CURE,[,LEVEL[,ID]]" -> a M1.1 rule table, or nil + why
 function G.decodeRule(text, index)
     local f = splitPlain(text, ',')
-    if #f < 8 or #f > 11 then
-        return nil, 'rule ' .. index .. ' has ' .. #f .. ' fields (8 to 11 expected)'
+    if #f < 8 or (#f > 11 and #f ~= 16) then
+        return nil, 'rule ' .. index .. ' has ' .. #f .. ' fields (8 to 11, or 16, expected)'
     end
 
     for _, field in ipairs(f) do
@@ -447,7 +479,7 @@ function G.decodeRule(text, index)
 
     local kind = ACTIONS[f[7]]
     if kind == nil then
-        return nil, 'rule ' .. index .. ': the action must be f, s, j, r, n, b, w, d, e or h'
+        return nil, 'rule ' .. index .. ': the action must be f, s, j, r, n, b, c, w, d, e or h'
     end
 
     if f[1] ~= '1' and f[1] ~= '0' then
@@ -469,8 +501,16 @@ function G.decodeRule(text, index)
         return nil, 'rule ' .. index .. ': the target must be TARGET, TARGET.ROLE or TARGET-ROLE'
     end
 
+    local action = NAMED[kind] and { kind, f[8] } or { kind }
+    if kind == 'burstcap' then
+        action = { kind, tonumber(f[8]) }
+        if action[2] == nil then
+            return nil, 'rule ' .. index .. ': a burst tier cap must be a number'
+        end
+    end
+
     local rule = { id = 'r' .. index, on = f[1] == '1', target = target, include = include, exclude = exclude,
-                   cond = { f[3], argValue(f[4]) }, action = NAMED[kind] and { kind, f[8] } or { kind } }
+                   cond = { f[3], argValue(f[4]) }, action = action }
     if f[10] ~= nil and f[10] ~= '' then
         rule.level = tonumber(f[10])
         if rule.level == nil then
@@ -524,6 +564,56 @@ function G.decodeRule(text, index)
         end
     end
 
+    -- (version 12) the long form: subjects, conditions 3 and 4, flags. Back to the rule's shape: cond / cond2 when that
+    -- still says it all (squad_rulesets.lua R.setConds), else conds.
+    if #f == 16 then
+        local list, gap = {}, false
+        for _, pair in ipairs({ { 3, 4 }, { 5, 6 }, { 12, 13 }, { 14, 15 } }) do
+            local c = condOf(f[pair[1]], f[pair[2]])
+            if c == nil and f[pair[2]] ~= '' then
+                return nil, 'rule ' .. index .. ': a value without a condition'
+            end
+
+            if c == nil then
+                gap = true
+            else
+                if gap then
+                    return nil, 'rule ' .. index .. ': the conditions must come in order (no empty one before another)'
+                end
+
+                -- the value forms of the first two conditions (counts, MOD_LT, song tiers) for every one of them
+                local decoded = G.decodeCount(c[1], c[2])
+                if decoded ~= nil then
+                    c[2] = decoded
+                elseif c[1] == 'MOD_LT' and type(c[2]) == 'string' then
+                    local mod, below = string.match(c[2], '^([A-Z][A-Z0-9_]*)%.(%d+)$')
+                    c[2] = mod and { mod = mod, below = tonumber(below) } or c[2]
+                elseif (c[1] == 'STATUS' or c[1] == 'NOT_STATUS') and type(c[2]) == 'string' and string.find(c[2], '.', 1, true) then
+                    local effect, tier = string.match(c[2], '^([A-Z][A-Z0-9_]*)%.(%d+)$')
+                    if effect == nil then
+                        return nil, 'rule ' .. index .. ': a song tier must be EFFECT.number'
+                    end
+
+                    c[2] = { effect = effect, tier = tonumber(tier) }
+                end
+
+                list[#list + 1] = c
+            end
+        end
+
+        if f[16] ~= '' and f[16] ~= 'w' then
+            return nil, 'rule ' .. index .. ': unknown flags ' .. f[16]
+        end
+
+        local okR, Rs = pcall(require, 'modules/custom/lua/squad_rulesets')
+        if not okR or type(Rs) ~= 'table' or type(Rs.setConds) ~= 'function' then
+            return nil, 'rule ' .. index .. ': this server cannot read the long rule form'
+        end
+
+        Rs.setConds(rule, list)
+        rule.wake = f[16] == 'w' or nil
+    end
+
     return rule
 end
 
@@ -531,9 +621,9 @@ end
 -- exactly (a table argument, a field this version does not know, a fraction, an odd value): the addon then shows the
 -- rule as "?" and keeps it read-only, so nothing is ever lost by an edit.
 local RULE_KEYS = { id = true, on = true, target = true, cond = true, cond2 = true, action = true, retry = true, level = true,
-                    include = true, exclude = true } -- (version 9: role filters)
+                    include = true, exclude = true, conds = true, wake = true } -- (version 9: role filters; 12: conds, wake)
 function G.encodeRule(rule, index)
-    if type(rule) ~= 'table' or type(rule.action) ~= 'table' or type(rule.cond) ~= 'table' then
+    if type(rule) ~= 'table' or type(rule.action) ~= 'table' or (type(rule.cond) ~= 'table' and type(rule.conds) ~= 'table') then
         return nil
     end
 
@@ -545,6 +635,10 @@ function G.encodeRule(rule, index)
 
     local kind = ACTION_CODE[rule.action[1] or '']
     if kind == nil or #rule.action ~= (NAMED[rule.action[1]] and 2 or 1) then
+        return nil
+    end
+
+    if rule.wake ~= nil and type(rule.wake) ~= 'boolean' then
         return nil
     end
 
@@ -588,19 +682,68 @@ function G.encodeRule(rule, index)
         return nil
     end
 
-    local c1, c2 = rule.cond, rule.cond2
-    if not word(c1[1]) or #c1 > 2 or (c2 ~= nil and (type(c2) ~= 'table' or not word(c2[1]) or #c2 > 2)) then
+    -- (version 12) every condition, old shape or conds; each { NAME, arg[, of = SELF|ENEMY|TARGET] }
+    local list = type(rule.conds) == 'table' and rule.conds or { rule.cond, rule.cond2 }
+    if type(rule.conds) == 'table' and (rule.cond ~= nil or rule.cond2 ~= nil) then
         return nil
     end
 
-    local a1, a2 = value(c1[2]), c2 and value(c2[2]) or ''
+    local conds, long = {}, type(rule.conds) == 'table' or rule.wake == true
+    for i = 1, 4 do
+        local c = list[i]
+        if c ~= nil then
+            if type(c) ~= 'table' or not word(c[1]) or #c > 2 then
+                return nil
+            end
+
+            for k in pairs(c) do
+                if k ~= 1 and k ~= 2 and k ~= 'of' then
+                    return nil
+                end
+            end
+
+            local suffix = ''
+            if c.of ~= nil and c.of ~= 'TARGET' then
+                suffix = G.SUFFIX_OF[c.of] and ('.' .. G.SUFFIX_OF[c.of]) or nil
+                if suffix == nil then
+                    return nil
+                end
+
+                long = true
+            end
+
+            local a = value(c[2])
+            if a == nil then
+                return nil
+            end
+
+            conds[i] = { c[1] .. suffix, a }
+        elseif i <= #list then
+            return nil
+        end
+    end
+
+    if #list > 4 or conds[1] == nil then
+        return nil
+    end
+
     local name = NAMED[rule.action[1]] and rule.action[2] or nil
+    if rule.action[1] == 'burstcap' then
+        name = whole(name) and name >= 1 and name <= 6 and string.format('%d', name) or nil
+        if name == nil then
+            return nil
+        end
+    end
+
     local retry, level = value(rule.retry), value(rule.level)
-    if a1 == nil or a2 == nil or retry == nil or level == nil or not word(rule.target)
+    if retry == nil or level == nil or not word(rule.target)
         or (name ~= nil and not word(name)) or (rule.on ~= nil and type(rule.on) ~= 'boolean')
         or (rule.retry ~= nil and not whole(rule.retry)) or (rule.level ~= nil and not whole(rule.level)) then
         return nil
     end
+
+    local c1, a1 = conds[1][1], conds[1][2]
+    local c2, a2 = conds[2] and conds[2][1] or '', conds[2] and conds[2][2] or ''
 
     local id = ''
     if rule.id ~= nil and rule.id ~= 'r' .. tostring(index or '') then
@@ -627,8 +770,17 @@ function G.encodeRule(rule, index)
         end
     end
 
-    local fields = { rule.on == false and '0' or '1', G.joinTarget(rule.target, rule.include, rule.exclude), c1[1], a1,
-                     c2 and c2[1] or '', a2, kind, name or '', retry }
+    local fields = { rule.on == false and '0' or '1', G.joinTarget(rule.target, rule.include, rule.exclude), c1, a1,
+                     c2, a2, kind, name or '', retry }
+    if long then
+        -- (version 12) the long form, always all 16 fields
+        fields[10], fields[11] = level, id
+        fields[12], fields[13] = conds[3] and conds[3][1] or '', conds[3] and conds[3][2] or ''
+        fields[14], fields[15] = conds[4] and conds[4][1] or '', conds[4] and conds[4][2] or ''
+        fields[16] = rule.wake == true and 'w' or ''
+        return table.concat(fields, ',')
+    end
+
     if level ~= '' or id ~= '' then
         fields[#fields + 1] = level
     end
@@ -903,6 +1055,7 @@ function G.caps()
         words[#words + 1] = 'smn'
         if type(Smn.replaceAll) == 'function' then
             words[#words + 1] = 'smn1' -- (a starter saved as one change: smb / smbs / smbr / smbc / smba)
+            words[#words + 1] = 'smn2' -- (B8: smbs avatar "-" keeps the mate's avatar choice)
         end
     end
 
@@ -910,6 +1063,13 @@ function G.caps()
     if okX and type(Wx) == 'table' and Wx.engineReady() then
         words[#words + 1] = 'wsset'
     end
+
+    -- (version 12, 2026-11-27) the long rule form can run here: conditions 3-4, subjects, Wake to act, the burst tier cap,
+    -- ERASABLE and ENEMY_ADD (the feedback batch's map server)
+    if R ~= nil and type(R.subjectReady) == 'function' and R.subjectReady() then
+        words[#words + 1] = 'subj'
+    end
+
 
     return #words > 0 and table.concat(words, ',') or '-'
 end
@@ -1019,19 +1179,28 @@ end
 -- (version 6) withMod: the addon reads modifier arguments (catm "jm"); an older addon's check refuses a whole catalog
 -- with an entry kind it does not know, so MOD_LT is only sent when asked for
 -- (version 11) withCount: the addon reads the enemy family (y) and count (p, q) arguments (catm "jmf")
-local function baseLists(R, withJa, withMod, withCount)
+-- (version 12) withV12: the addon reads the long rule form (catm "jmfs"): ERASABLE and the target ENEMY_ADD are offered, with
+-- the feedback batch's map server (R.subjectReady)
+local function baseLists(R, withJa, withMod, withCount, withV12)
     local engineOk = R.engineReady == nil or R.engineReady()
     local engine2Ok = R.engine2Ready == nil or R.engine2Ready()
     local engine3Ok = R.engine3Ready == nil or R.engine3Ready()
+    local engine4Ok = withV12 and R.subjectReady ~= nil and R.subjectReady()
     local function offered(name)
         return (engineOk or not (R.ENGINE_NAMES and R.ENGINE_NAMES[name]))
             and (engine2Ok or not (R.ENGINE2_NAMES and R.ENGINE2_NAMES[name]))
             and (engine3Ok or not (R.ENGINE3_NAMES and R.ENGINE3_NAMES[name]))
+            and (engine4Ok or not (R.ENGINE4_NAMES and R.ENGINE4_NAMES[name]))
     end
 
     local lists = {}
     lists.t = {}
-    for _, t in ipairs(TARGETS) do
+    local targets = {}
+    for i, t in ipairs(TARGETS) do
+        targets[i] = t
+    end
+    targets[#targets + 1] = 'ENEMY_ADD' -- (version 12, F21: offered only with withV12 and the map server, see offered)
+    for _, t in ipairs(targets) do
         if (ai == nil or ai.t == nil or ai.t[t] ~= nil) and offered(t) then
             lists.t[#lists.t + 1] = t
         end
@@ -1319,9 +1488,10 @@ requests.catm = function(player, w)
         return
     end
 
-    -- "j" (version 5) / "jm" (version 6) / "jmf" (version 11): which argument kinds the addon reads
+    -- "j" (version 5) / "jm" (version 6) / "jmf" (version 11) / "jmfs" (version 12): which argument kinds the addon reads
     local flags = w[4] or ''
-    local lists = baseLists(R, flags == 'j' or flags == 'jm' or flags == 'jmf', flags == 'jm' or flags == 'jmf', flags == 'jmf')
+    local v11 = flags == 'jmf' or flags == 'jmfs'
+    local lists = baseLists(R, flags == 'j' or flags == 'jm' or v11, flags == 'jm' or v11, v11, flags == 'jmfs')
     lists.j = G.mateAbilities(player, mate.mjob, main, sub, subLevel)
     lists.s, lists.u = G.mateSpells(player, mate.mjob, main, sub, subLevel)
     replyCatalog(player, w[2], lists, CATM_KINDS)
@@ -1700,6 +1870,7 @@ end
 -- refused part leaves the mate's settings and pact rules exactly as they were (no partial replacement).
 -- smb  <n> <slot>                                   -> begin (drops an older unfinished one): GSQ|n|smb|slot|begun, end|1
 -- smbs <n> <slot> <avatar> <engage> <rage> <ward> <between> <idle> <rswitch>  -> staged: GSQ|n|smb|slot|settings, end|1
+--      (cap smn2) <avatar> "-" keeps the mate's saved avatar choice
 -- smbr <n> <slot> <i> <on> <PACT> <TARGET> <COND> <ARG> <WHEN> <protect>     -> staged: GSQ|n|smb|slot|rule|i, end|1
 -- smbc <n> <slot> <rules>                            -> commit (all checked, then written): the smg answer
 -- smba <n> <slot>                                    -> drop it: GSQ|n|smb|slot|dropped, end|1
@@ -1734,12 +1905,15 @@ requests.smbs = function(player, w)
         return
     end
 
+    -- (B8, 2026-11-27, cap smn2) avatar "-" = keep the mate's saved avatar choice: a starter changes it only when you
+    -- picked one in the draft
+    local keepChoice = w[4] == '-'
     local avatar = tonumber(w[4] or '')
     local s = { engage = w[5] ~= '0', rage = tonumber(w[6] or ''), ward = tonumber(w[7] or ''), between = tonumber(w[8] or ''),
                 idle = w[9] == '1', ruleSwitch = w[10] ~= '0' }
     local packed, why = Smn.packSettings(s)
-    if avatar == nil or avatar < 0 or avatar > Smn.KEEP or avatar ~= math.floor(avatar) then
-        packed, why = nil, 'the avatar must be 0-9'
+    if not keepChoice and (avatar == nil or avatar < 0 or avatar > Smn.KEEP or avatar ~= math.floor(avatar)) then
+        packed, why = nil, 'the avatar must be 0-9 or -'
     end
 
     if packed == nil then
@@ -1812,9 +1986,13 @@ requests.smbc = function(player, w)
         return
     end
 
-    local trust = mateOut(player, mate.id)
-    local has = xi.squad and xi.squad.avatarHas and xi.squad.avatarHas(player) or nil
-    Smn.setChoice(player, mate.id, mate.name, st.avatar ~= 0 and st.avatar or nil, st.avatar ~= Smn.KEEP and trust or nil, has, false)
+    -- (B8) st.avatar nil = "-": the mate's own avatar choice stays as it was
+    if st.avatar ~= nil then
+        local trust = mateOut(player, mate.id)
+        local has = xi.squad and xi.squad.avatarHas and xi.squad.avatarHas(player) or nil
+        Smn.setChoice(player, mate.id, mate.name, st.avatar ~= 0 and st.avatar or nil, st.avatar ~= Smn.KEEP and trust or nil, has, false)
+    end
+
     replySmn(player, w[2], Smn, mate)
 end
 

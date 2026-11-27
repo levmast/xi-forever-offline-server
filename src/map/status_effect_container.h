@@ -80,6 +80,9 @@ public:
     auto HasStatusEffect(xi::StatusEffect StatusID, uint16 SubID) -> bool; // Check the presence of an effect with a unique Subid
     auto HasStatusEffect(std::initializer_list<xi::StatusEffect>) -> bool;
     auto HasStatusEffectByFlag(xi::StatusEffectFlag flag) -> bool;
+    // XI: Forever Offline (F20, 2026-11-27): true when EraseStatusEffect would remove something (the same filter: the Erasable
+    // flag, a duration, not already being removed), so an "erasable debuff" rule never fires on a permanent effect
+    auto HasErasableEffect() -> bool;
 
     auto EraseStatusEffect() -> xi::StatusEffect;                                                             // We delete the first negative effect
     auto HealingWaltz() -> xi::StatusEffect;                                                                  // dancers healing waltz

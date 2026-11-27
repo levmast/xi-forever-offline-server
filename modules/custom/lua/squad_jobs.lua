@@ -114,7 +114,9 @@ end
 J.actionFamily = actionFamily
 
 local function hasTpCondition(rule)
-    for _, c in ipairs({ rule.cond, rule.cond2 }) do
+    -- (F22) every condition of the rule, old shape (cond / cond2) or new (conds)
+    local list = type(rule.conds) == 'table' and rule.conds or { rule.cond, rule.cond2 }
+    for _, c in pairs(list) do
         if type(c) == 'table' and c[1] == 'TP_GTE' then
             return true
         end

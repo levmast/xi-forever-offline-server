@@ -125,6 +125,7 @@ xi.settings.main =
     SHOP_PRICE          = 1.000, -- Multiplies prices in NPC shops.
     GIL_RATE            = 1.000, -- Multiplies gil earned from quests.  Won't always display in game.
     AH_PRICE_RATE       = 1.000, -- XI: Forever Offline: auction house prices (the simulator's listings and bot players' sales). 1 = as they are.
+    AH_OUT_OF_ERA       = 0,     -- XI: Forever Offline: 1 = the auction house simulator also stocks items newer than the era (ah_sim.py reads it from the launcher's rates.json).
     FAME_RATE           = 1.000, -- XI: Forever Offline: multiplies fame earned from quests and other rewards.
     BAYLD_RATE          = 1.000, -- Multiples bayld earned from quests.
     -- Note: EXP rates are also influenced by conf setting

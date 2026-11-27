@@ -86,8 +86,9 @@ local function idOf(entity)
     return ok and id or 0
 end
 
--- the failure that explains most: not ready beats no target beats busy beats "I do not know that" (the same order as squad_logic.lua)
-local RANK = { notready = 4, notarget = 3, busy = 2 }
+-- the failure that explains most: not ready beats too far beats no target beats busy beats "I do not know that" (the same order as
+-- squad_logic.lua; "far" is B9, 2026-11-27: a valid target out of the spell's reach)
+local RANK = { notready = 5, far = 4, notarget = 3, busy = 2 }
 
 local function rank(result)
     return RANK[result] or 1
@@ -137,6 +138,24 @@ R.LINES.failed = {
     'That {spell} did not land.',
     '{spell} fizzled, it did not take. Ask again.',
 }
+-- (B9 / B11, 2026-11-27) the request was received, the cast comes once the caster is close enough; then what happened
+R.LINES.approach = {
+    'On my way: {spell} on {who} once I am close enough.',
+    'Coming over for {spell} on {who}.',
+}
+R.LINES.stepin = {
+    'Getting closer for {spell}, stay near me.',
+    '{spell} as soon as I am next to you.',
+}
+R.LINES.far = {
+    '{who} is too far away for {spell} ({dist} yalms, I reach {reach}){why}.',
+}
+R.LINES.deferfail = {
+    'No {spell} after all: {why}.',
+}
+R.WHY_TEXT = { [1] = 'I could not get close enough', [2] = 'I could not get there in time', [3] = 'a fight started',
+               [4] = 'the target changed (gone, up again, or in another area)', [5] = 'not enough MP, or it is still recasting',
+               [6] = 'I was busy with something else when I got there' }
 
 -- 'cure_iv' -> 'Cure IV'
 local function pretty(name)
@@ -256,6 +275,15 @@ R.EFFECT = R.EFFECT or {
     sneak = 'SNEAK', invisible = 'INVISIBLE', deodorize = 'DEODORIZE', haste = 'HASTE', protect = 'PROTECT', shell = 'SHELL', blink = 'BLINK',
     stoneskin = 'STONESKIN', phalanx = 'PHALANX', regen = 'REGEN', refresh = 'REFRESH', aquaveil = 'AQUAVEIL',
 }
+-- (B11, 2026-11-27) the Bar spells and their -ra versions: "On it" only once the effect is on (before: said the moment the
+-- request was taken, so a Bar-ra that never got cast after the step in still had its "On it")
+for single, party in pairs({ barfire = 'barfira', barblizzard = 'barblizzara', baraero = 'baraera', barstone = 'barstonra',
+                             barthunder = 'barthundra', barwater = 'barwatera', barsleep = 'barsleepra', barpoison = 'barpoisonra',
+                             barparalyze = 'barparalyzra', barblind = 'barblindra', barsilence = 'barsilencera',
+                             barpetrify = 'barpetra', barvirus = 'barvira' }) do
+    R.EFFECT[single] = R.EFFECT[single] or single:upper()
+    R.EFFECT[party] = R.EFFECT[party] or single:upper()
+end
 R.LAND_TRIES = 3 -- looks at the target: one second after the cast time, then every two seconds
 
 local function effectOf(spellName)
@@ -302,6 +330,66 @@ function R.acknowledge(player, mate, spellName, spellId, target)
     if not ok then
         report(player, mate, spellName, 'cast') -- no timer to wait with: answer now, as before
     end
+end
+
+-----------------------------------
+-- (B9 / B11, 2026-11-27) a cast that starts later: the mate walks in to a body out of reach (approach) or steps in for an area
+-- spell (stepin). The request is answered as received at once; the outcome is read from the mate's local vars
+-- (squad_cast_approach.h: SQUAD_DEFER_SPELL / _STATE 2 cast, 3 failed / _WHY), then the usual acknowledgement (landing check)
+-- or a line saying why it did not happen.
+-----------------------------------
+R.DEFER_TRIES = 20 -- one look a second (the walk gives up after 10 s, a step in after 4-7 s)
+
+function R.awaitDeferred(player, mate, spellName, spellId, target, how)
+    local who = target ~= nil and target ~= player and tostring(target:getName()):gsub('_', ' ') or 'you'
+    say(player, mate, how, { spell = pretty(spellName), who = who })
+    local tries = 0
+    local function look()
+        tries = tries + 1
+        local okV, sid, state, why = pcall(function()
+            return mate:getLocalVar('SQUAD_DEFER_SPELL'), mate:getLocalVar('SQUAD_DEFER_STATE'), mate:getLocalVar('SQUAD_DEFER_WHY')
+        end)
+
+        if okV and sid == spellId and state == 2 then
+            R.claim(player, spellId, target) -- (the cast is on its way now: the claim lasts its cast time from here)
+            R.acknowledge(player, mate, spellName, spellId, target)
+        elseif okV and sid == spellId and state == 3 then
+            R.release(player, spellId, target)
+            say(player, mate, 'deferfail', { spell = pretty(spellName), why = R.WHY_TEXT[why] or 'it could not be cast' })
+        elseif tries < R.DEFER_TRIES then
+            mate:timer(1000, look)
+        else
+            R.release(player, spellId, target)
+            say(player, mate, 'deferfail', { spell = pretty(spellName), why = 'it took too long' })
+        end
+    end
+
+    pcall(function()
+        mate:timer(1000, look)
+    end)
+end
+
+-- (B9) "too far": how far, and the reach of the spell (the player rule: its range plus both hitboxes, about +1)
+function R.sayFar(player, mate, spellName, spellId, target)
+    -- (squad.cpp writes the distance and the reach in tenths of a yalm when it answers "far")
+    local okD, dist = pcall(function() return mate:getLocalVar('SQUAD_FAR_DIST') / 10 end)
+    local okR, reach = pcall(function() return mate:getLocalVar('SQUAD_FAR_REACH') / 10 end)
+    if not okD or dist <= 0 then
+        okD, dist = pcall(function() return mate:checkDistance(target or player) end)
+    end
+
+    reach = (okR and reach > 0) and reach or 20
+
+    local why = ''
+    local okE, engaged = pcall(function() return player:isEngaged() or mate:isEngaged() end)
+    if okE and engaged then
+        why = ', and I do not leave a fight for it'
+    elseif mate:getLocalVar('SQUAD_CAMP') ~= 0 then
+        why = ', and I am holding the camp'
+    end
+
+    say(player, mate, 'far', { who = target ~= nil and target ~= player and tostring(target:getName()):gsub('_', ' ') or 'You',
+        spell = pretty(spellName), dist = okD and math.floor(dist + 0.5) or '?', reach = math.floor(reach + 0.5), why = why })
 end
 
 -- G9: the first person of your party who is knocked out, in the same zone (a squad mate cannot be raised: it is called again)
@@ -429,14 +517,20 @@ function R.cast(player, askedMates, everyone, spellId, spellName, named, text)
     local anyCast, worstFailure, failureSpeaker = false, 'unknown', askedMates[1]
     for _, mate in ipairs(askedMates) do
         local result = SquadCastSpell(player, mate, spellId, named)
-        if result == 'cast' then
+        if result == 'cast' or result == 'approach' or result == 'stepin' then
             anyCast = true
             if kind ~= 'enemy' then
                 R.claim(player, spellId, target)
             end
 
             R.markLine(player, text)
-            R.acknowledge(player, mate, spellName, spellId, target)
+            if result == 'cast' then
+                R.acknowledge(player, mate, spellName, spellId, target)
+            else
+                -- (B9 / B11) received now; cast (or not) later, and said so
+                R.awaitDeferred(player, mate, spellName, spellId, target, result)
+            end
+
             if not everyone then
                 return true
             end
@@ -446,7 +540,11 @@ function R.cast(player, askedMates, everyone, spellId, spellName, named, text)
     end
 
     if not anyCast then
-        report(player, failureSpeaker, spellName, worstFailure)
+        if worstFailure == 'far' then
+            R.sayFar(player, failureSpeaker, spellName, spellId, target)
+        else
+            report(player, failureSpeaker, spellName, worstFailure)
+        end
     end
 
     return true
@@ -760,17 +858,22 @@ local function finish(req)
 
     req.finished = true
     -- every unit that nobody could do: one line, the likeliest reason, from the mate that fits the request best
-    local worst, speaker, spell = 'unknown', nil, nil
+    local worst, speaker, spell, worstUnit = 'unknown', nil, nil, nil
     for _, unit in ipairs(req.units) do
         if unit.state == 'failed' and rank(unit.why) > rank(worst) then
-            worst, speaker, spell = unit.why, unit.mate or req.asked[1], unit.spellName
+            worst, speaker, spell, worstUnit = unit.why, unit.mate or req.asked[1], unit.spellName, unit
         elseif unit.state == 'failed' and spell == nil then
             speaker, spell = unit.mate or req.asked[1], unit.spellName
         end
     end
 
     if spell ~= nil and not req.acked then
-        report(req.player, speaker or req.asked[1], spell, worst)
+        if worst == 'far' and worstUnit ~= nil and worstUnit.tiers[1] ~= nil then
+            -- (B9) the distance and the reach, and why the mate does not walk over (a fight, the camp)
+            R.sayFar(req.player, speaker or req.asked[1], spell, worstUnit.tiers[1].id, worstUnit.target)
+        else
+            report(req.player, speaker or req.asked[1], spell, worst)
+        end
     end
 
     -- nothing was cast and nothing failed: say why, once (everyone has it already, nobody needs it, nobody is down)
@@ -933,6 +1036,11 @@ local function tryList(req, unit, list)
             local result = SquadCastSpell(req.player, mate, tier.id, unit.named)
             if result == 'cast' then
                 return 'cast', mate, tier
+            elseif result == 'approach' or result == 'stepin' then
+                return 'cast', mate, tier, result -- (B9 / B11) accepted; the cast comes later (R.awaitDeferred)
+            elseif result == 'far' then
+                mateWorst = 'far' -- (B9) every tier has the same reach
+                break
             elseif result == 'busy' then
                 sawBusy = true
                 break -- she is casting: no other tier changes that
@@ -969,9 +1077,9 @@ local function tryUnit(req, unit)
     end
 
     if req.sticky and req.speaker ~= nil then
-        local result, a, b = tryList(req, unit, { req.speaker })
+        local result, a, b, how = tryList(req, unit, { req.speaker })
         if result == 'cast' or result == 'busy' then
-            return result, a, b
+            return result, a, b, how
         end
 
         local others = {}
@@ -994,14 +1102,18 @@ local function step(req)
             if R.takenFamily(req.player, unit) then
                 unit.state = 'taken'
             else
-                local result, a, b = tryUnit(req, unit)
+                local result, a, b, how = tryUnit(req, unit)
                 if result == 'cast' then
                     req.speaker = req.speaker or a
                     unit.state, unit.id, unit.spellName = 'casting', b.id, b.name
                     R.claim(req.player, unit.id, unit.target)
                     R.markLine(req.player, req.text)
                     -- (B4) each mate casting a spell on herself answers for her own cast, checked on her
-                    if not req.acked or unit.only ~= nil then
+                    if how ~= nil then
+                        -- (B9 / B11) "on my way" now, then cast or not, each said (also for a later unit of the same request)
+                        req.acked = true
+                        R.awaitDeferred(req.player, a, unit.spellName, unit.id, unit.target, how)
+                    elseif not req.acked or unit.only ~= nil then
                         req.acked = true
                         R.acknowledge(req.player, a, unit.spellName, unit.id, unit.target)
                     end

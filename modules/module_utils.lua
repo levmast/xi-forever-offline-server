@@ -42,8 +42,17 @@ function applyOverride(base_table, name, func, fullname, filename)
 
     local thisenv = getfenv(old)
 
+    -- (XI: Forever Offline, 2026-11-27) An override used to look its globals up through the environment of the
+    -- function it wraps, that one through the one before it, and so on down to the original function. LuaJIT follows
+    -- at most 100 such steps: from the 100th override of one function on, the first global an override touched
+    -- raised "loop in gettable", and that override and every later one did nothing. xi.server.onServerStart reached
+    -- 100 on 2026-11-25 (era + Phoenix + our own modules), which silently switched off whatever was declared last.
+    -- Every override now looks straight into the original function's environment; only `super` is its own.
+    local parentMeta = getmetatable(thisenv)
+    local rootenv    = type(parentMeta) == 'table' and rawget(parentMeta, '__overrideRoot') or thisenv
+
     local env = { super = old }
-    setmetatable(env, { __index = thisenv })
+    setmetatable(env, { __index = rootenv, __overrideRoot = rootenv })
 
     setfenv(func, env)
 

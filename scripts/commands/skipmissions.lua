@@ -70,6 +70,8 @@ local function keyItemsIn(filename)
     return given, taken
 end
 
+commandObj.keyItemsIn = keyItemsIn -- (2026-11-26) also read by !resetmissions (scripts/commands/resetmissions.lua)
+
 -- (2026-11-25) the skip itself, also used by !skip (scripts/commands/skip.lua): every mission of the log before
 -- missionId is marked done, missionId becomes the current one (65535 = none: the whole story is done), and the key items
 -- those missions hand out are given, minus the ones a skipped mission takes back. Returns the count and the key items.
@@ -86,8 +88,14 @@ commandObj.skip = function(targ, logId, missionId)
 
     table.sort(skipped)
 
-    for _, filename in ipairs(GetContainerFilenamesList()) do
-        if filename:find('scripts/missions/', 1, true) then
+    -- (2026-11-26, Garrett: "bad argument #1 to 'ipairs' (table expected, got userdata)") the list is a C++ list:
+    -- it has a length and numbered entries, but ipairs does not walk it. On Windows its paths use backslashes
+    -- (scripts\missions\...): the name is kept as it is for require and for opening the file, and only compared
+    -- with forward slashes.
+    local containerFiles = GetContainerFilenamesList()
+    for i = 1, #containerFiles do
+        local filename = containerFiles[i]
+        if type(filename) == 'string' and (filename:gsub('\\', '/')):find('scripts/missions/', 1, true) then
             local ok, container = pcall(require, filename)
             if ok and type(container) == 'table' and container.areaId == logId and
                 type(container.missionId) == 'number' and container.missionId < missionId

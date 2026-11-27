@@ -80,6 +80,9 @@ phoenix/dynamis/lua/
 custom/cpp/squad.cpp
 # Hardcore modes (Iron / Steel / Silver): auction house, trade, delivery and party rules (rules and rates: custom/late/hardcore.lua)
 custom/cpp/hardcore.cpp
+# !deliverybox: the whole delivery box into the inventory at once (Quaiton, 2026-11-26)
+custom/cpp/delivery_take.cpp
+custom/lua/delivery_take.lua
 custom/lua/squad.lua
 # Party chat commands (thin squad.cpp: the chat decisions are in this file; it needs the rebuilt map server)
 custom/lua/squad_logic.lua
@@ -151,6 +154,8 @@ custom/lua/fov_no_buffs.lua
 # Casket changes
 custom/lua/casket_tweaks.lua
 custom/lua/extra_caskets.lua
+# Survival Guides carry their own name (the era name lists show a neighbour's: "Summoner"; Syfin, 2026-11-26)
+custom/lua/survival_guide_names.lua
 custom/lua/gambit_status.lua
 
 # Era experience tables
@@ -200,6 +205,8 @@ custom/lua/forever_beta_shirt.lua
 custom/lua/chocobo_egg_gift.lua
 custom/sql/forever_patch.sql
 custom/lua/forever_patch.lua
+custom/sql/forever_jeans.sql
+custom/lua/forever_jeans.lua
 
 # Ambient crowds: player-like adventurers in towns (switch and size: launcher, CONFIG > Rates)
 custom/lua/crowds.lua

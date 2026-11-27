@@ -150,6 +150,16 @@ end)
 
 -- Ancestry Moogles --------------------------------------------------------------
 m:addOverride('xi.ancestryMoogle.onTrigger', function(player, npc)
+    -- (2026-11-26, Ruri: the Windurst Walls moogle froze the game) The era game files hold Windurst Walls' events as
+    -- they were numbered before the November 2026 game update, which moved this moogle's number by one. Its window
+    -- is then looked up under the wrong NPC and the game waits for it for good. Until the era files catch up, this
+    -- one moogle only says where the working ones are. (Port Bastok's and Port San d'Oria's numbers did not move.)
+    if player:getZoneID() == xi.zone.WINDURST_WALLS then
+        player:printToPlayer('This Ancestry Moogle is out of order for now (the era game files). ' ..
+            'The Ancestry Moogles in Port Bastok and Port San d\'Oria can help you.', xi.msg.channel.SYSTEM_3)
+        return
+    end
+
     if on('ANCESTRY_MOOGLES') then
         local now = GetSystemTime()
         player:setCharVar('[RaceChange]Last', 0)                          -- no 14-day wait

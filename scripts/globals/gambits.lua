@@ -22,6 +22,7 @@ ai.target =
     TRIGGER_SELF_ACTION_TARGET = 12, -- Triggers get checked on the trust but the action target is the battleTarget
     TRIGGER_TARGET_ACTION_SELF = 13, -- Triggers get checked on the battleTarget but the action target is the trust
     PARTY_LOWEST_HPP           = 14, -- (XI: Forever Offline) like PARTY, tried from the lowest HP% up
+    ENEMY_ADD                  = 15, -- (XI: Forever Offline, F21) the nearest awake add fighting the party (not its combat target)
 }
 ai.t = ai.target
 
@@ -105,7 +106,13 @@ ai.condition =
     ENEMY_FAMILY       = 44, -- (XI: Forever Offline, F1) the enemy is of this monster family (xi.mobFamily, e.g. GOBLIN)
     PARTY_COUNT        = 45, -- (XI: Forever Offline, F2) party members (with a status) counted: filter | number << 16 | comparison << 24
     ENEMY_COUNT        = 46, -- (XI: Forever Offline, F2) monsters fighting the party near the target counted: hp | radius << 8 | number << 16 | comparison << 24
+    ERASABLE           = 47, -- (XI: Forever Offline, F20) the target has an effect Erase can remove now (Erasable flag and a duration)
+    WAKE               = 48, -- (XI: Forever Offline, F18) always true: marks a "Wake to act" rule (a mate resting in a fight runs only these)
 }
+-- (XI: Forever Offline, F22) a condition about another subject than the rule's target: condition + subject * SUBJECT_STEP
+-- (1 = the mate itself, 2 = the mate's combat target; squad_cond_subject.h)
+ai.SUBJECT_STEP = 0x1000
+ai.subject = { TARGET = 0, SELF = 1, ENEMY = 2 }
 ai.c = ai.condition
 
 -- Reaction
@@ -128,7 +135,7 @@ ai.select =
     LOWEST              = 1,
     SPECIFIC            = 2,
     RANDOM              = 3,
-    MB_ELEMENT          = 4,
+    MB_ELEMENT          = 4, -- (XI: Forever Offline, F10) argument = the highest tier to burst with (0 = the best it has)
     SPECIAL_AYAME       = 5,
     SPECIAL_AUGUST      = 6,
     BEST_AGAINST_TARGET = 7,

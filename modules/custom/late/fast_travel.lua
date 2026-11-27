@@ -725,6 +725,11 @@ end
 local SURVIVAL_TEXT_ZONES =
 {
     [xi.zone.RULUDE_GARDENS] = true,
+    -- (2026-11-26) the November update also moved the NPC ids of five areas down by one (Phoenix 9cbad2c446c). The
+    -- era event file of Northern San d'Oria still has the guide's window under the old id (17723825; the server's
+    -- guide is 17723824 now), so the retail window cannot open there: the same fault as Windurst Walls' Ancestry
+    -- Moogle, which locked the game (Ruri). Our own menu needs nothing from the game files.
+    [xi.zone.NORTHERN_SAN_DORIA] = true,
 }
 
 local function guideTextMenu(player, zoneId, guide, ownLines)

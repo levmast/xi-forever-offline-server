@@ -1,5 +1,6 @@
 -----------------------------------
--- Ventures (2026-11-25): squad mates sent off from the XIFO app to level at a real exp camp. Used by squad.lua.
+-- Ventures (2026-11-25): squad mates sent off to level at a real exp camp, from the XIFO app or (2026-11-26) from the
+-- game's own Ventures window (the kit's venture add-on; the Squads menu's Ventures button opens it). Used by squad.lua.
 --
 -- The launcher (launcher_ventures.py) keeps three files in <kit>/ventures/:
 --   away.txt   char|slot|end|camp            mates out now: they can't be called, and one that is out gets sent home
@@ -95,7 +96,7 @@ V.away = function(player, mate)
     if a == nil then
         return nil
     end
-    return string.format('%s is away on a venture at %s (back in %s). You can call them home early from the XIFO app.',
+    return string.format('%s is away on a venture at %s (back in %s). Call them home early with the Ventures button in the Squads menu, or from the XIFO app.',
         mate.name, a.camp, left(a.finish - os.time()))
 end
 

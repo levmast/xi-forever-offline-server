@@ -1020,11 +1020,34 @@ function S.pickId(mob, master, level, has)
 end
 
 -- the avatar this mate should have when nothing special is going on: your choice, Keep (the last one), or the default
+-- (B8, 2026-11-27) tell you once why a fixed avatar cannot be called (the level, a missing pact); said again only when
+-- the reason changes. Cleared once the avatar can be called.
+function S.noteChoice(mob, master, name, why)
+    local st = stateOf(mob)
+    local note = name and why and (name .. ':' .. why) or nil
+    if note == st.choiceNote then
+        return
+    end
+
+    st.choiceNote = note
+    if note ~= nil then
+        log(mob, string.format('your choice %s cannot be called: %s', pretty(name), why))
+        pcall(function()
+            master:printToPlayer(string.format('%s cannot call %s: %s. No other avatar is called in its place; pick another in '
+                .. 'Gambits (Summoner) or with !squad avatar.', mob:getPacketName(), pretty(name), why))
+        end)
+    end
+end
+
 local function wantedAvatar(mob, master, level, has, defaultPick)
     local choice = master:getCharVar(S.choiceVar(mob:getLocalVar('SQUAD_ID')))
     local name = S.AVATARS[choice]
-    if name and S.allowed(name, level, has) then
-        return name
+    if name then
+        -- (B8) a fixed choice is used, or nothing: before, an avatar it could not call fell through to the random default
+        -- pick (Garuda one time in seven) without a word
+        local ok, why = S.allowed(name, level, has)
+        S.noteChoice(mob, master, name, not ok and why or nil)
+        return ok and name or nil
     end
 
     if choice == S.KEEP then
@@ -1117,6 +1140,37 @@ local function progressIntent(mob, master, target, rules, has, now)
     return true
 end
 
+-- (B8, 2026-11-27) a fixed avatar choice comes back after a pact rule switched away from it: with no pact on its way, the
+-- switch hold over (SMN_SWAP_NEXT), no manual order holding the current one, the summon + 2 ticks of upkeep affordable,
+-- and no enabled rule for the avatar that is out able to act now (so a Claw rule that still fits keeps Garuda instead
+-- of switching back and forth). true when it switched.
+function S.restoreChoice(mob, master, rules, settings, level, has, now, fighting, target)
+    local mateId = mob:getLocalVar('SQUAD_ID')
+    local fixed = S.AVATARS[master:getCharVar(S.choiceVar(mateId))]
+    local current = currentAvatar(mob)
+    if fixed == nil or current == nil or current == fixed or manualHold(mob, now) or now < mob:getLocalVar('SMN_SWAP_NEXT') then
+        return false
+    end
+
+    if not S.allowed(fixed, level, has) then
+        return false -- (wantedAvatar says why once)
+    end
+
+    for _, r in ipairs(rules) do
+        local e = S.PACTS[r.pact]
+        local whenOk = (fighting and (r.when == 'COMBAT' or r.when == 'ANY'))
+            or (not fighting and settings.idle and (r.when == 'IDLE' or r.when == 'ANY'))
+        local kindOff = e and ((e[2] == 'rage' and settings.rage == 1) or (e[2] == 'ward' and settings.ward == 1))
+        if r.on and e and e[1] == current and whenOk and not kindOff and level >= e[3] and (e[2] ~= 'rage' or fighting)
+            and S.ruleAim(r, mob, master, target) ~= nil then
+            return false -- (a rule for the avatar that is out still fits: it stays)
+        end
+    end
+
+    local ok = S.switchTo(mob, fixed, now, has, 'back to your choice', 2 * math.max(0, S.netUpkeep(mob, fixed)))
+    return ok == true
+end
+
 -- one planning step; fighting = a combat tick with a living target
 local function plan(mob, master, target, now, has, defaultPick, fighting)
     local st = stateOf(mob)
@@ -1149,7 +1203,17 @@ local function plan(mob, master, target, now, has, defaultPick, fighting)
     -- an avatar for the fight when it has none: a paid summon that keeps 2 ticks of upkeep in hand
     if fighting and pet == nil and st.intent == nil and now >= mob:getLocalVar('SQUAD_PET_NEXT') then
         local name = wantedAvatar(mob, master, level, has, defaultPick)
-        local ok = S.summon(mob, name, now, has, 2 * math.max(0, S.netUpkeep(mob, name)))
+        -- (B8) Auto: the first summon of a fight is already the avatar the enemy is weakest to (before, the random
+        -- default pick came first and the weakness switch paid a second summon a moment later)
+        if master:getCharVar(S.choiceVar(mateId)) == 0 and not manualHold(mob, now) then
+            local best = S.bestFor(target, level, has)
+            if best then
+                name = best
+                mob:setLocalVar('SMN_LAST_TGT', target:getID())
+            end
+        end
+
+        local ok = name ~= nil and S.summon(mob, name, now, has, 2 * math.max(0, S.netUpkeep(mob, name)))
         mob:setLocalVar('SQUAD_PET_NEXT', now + (ok and 120 or 10))
         current, pet = currentAvatar(mob)
     end
@@ -1164,6 +1228,11 @@ local function plan(mob, master, target, now, has, defaultPick, fighting)
     end
 
     if busy or st.intent ~= nil or st.sent ~= nil then
+        return
+    end
+
+    -- (B8) back to a fixed choice once the rule's pact is done
+    if S.restoreChoice(mob, master, rules, settings, level, has, now, fighting, target) then
         return
     end
 
@@ -1290,6 +1359,12 @@ function S.idleTick(mob, master, now, has, defaultPick)
         local low = mob:getMaxMP() > 0 and mob:getMP() * 2 < mob:getMaxMP()
         if settings.between == 1 or (settings.between == 2 and low) then
             S.release(mob, 'between pulls')
+            return
+        end
+
+        -- (B8) between fights, a fixed choice comes back after a rule switched away from it
+        local okL, rules = pcall(S.getRules, master, mob:getLocalVar('SQUAD_ID'))
+        if okL and S.restoreChoice(mob, master, rules, settings, mob:getMainLvl(), has, now, false, nil) then
             return
         end
     end

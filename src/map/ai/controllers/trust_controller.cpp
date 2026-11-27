@@ -24,6 +24,7 @@
 #include "ability.h"
 #include "common/earth_time.h"
 #include "ai/helpers/gambits_container.h"
+#include "ai/helpers/squad_cast_approach.h"
 #include "ai/helpers/squad_follow.h"
 #include "ai/helpers/squad_position.h"
 #include "ai/helpers/squad_threat.h"
@@ -345,6 +346,30 @@ auto CTrustController::Tick(timer::time_point tick) -> Task<void>
         co_return;
     }
 
+    // XI: Forever Offline (F18, 2026-11-27): "Rest in fights": squad.lua sat this mate down while the party fights (its MP below
+    // the setting, nothing attacking it). It stays out of the fight and in place; only its "Wake to act" rules run. One that
+    // acts stands it up for that action (SQUAD_REST_FIGHT_ON 2, gambits_container.cpp): still out of the fight, still only those
+    // rules, until squad.lua sits it down again. squad.lua ends the rest on damage, movement, MP back, or the fight's end.
+    if (PTrust->GetLocalVar("SQUAD_ID") != 0 && PTrust->GetLocalVar("SQUAD_REST_FIGHT_ON") != 0)
+    {
+        if (POwner->PAI->IsEngaged())
+        {
+            POwner->PAI->Internal_Disengage();
+        }
+
+        if (POwner->PAI->PathFind->IsFollowingPath())
+        {
+            POwner->PAI->PathFind->Clear();
+        }
+
+        if (!POwner->PAI->IsCurrentState<CMagicState>() && !POwner->PAI->IsCurrentState<CRangeState>())
+        {
+            co_await m_GambitsContainer->Tick(tick, false, true);
+        }
+
+        co_return;
+    }
+
     const bool nonCombatFollowTrust = PTrust->getMobMod(xi::MobMod::TrustDistance) == TRUST_MOVEMENT_TYPE::NON_COMBAT;
 
     position_t camp{};
@@ -441,6 +466,13 @@ auto CTrustController::DoCombatTick(timer::time_point tick) -> Task<void>
     if (PTrust->PAI->IsCurrentState<CMagicState>() || PTrust->PAI->IsCurrentState<CRangeState>())
     {
         co_return;
+    }
+
+    // XI: Forever Offline (B9): a walk-in for a chat request ends when a fight starts (said as such); the fight's movement is
+    // unchanged
+    if (IsApproaching())
+    {
+        ApproachTick();
     }
 
     // FFXI Offline squad: an area spell is waiting for this mate to step within reach of the player. The rules keep
@@ -678,6 +710,12 @@ auto CTrustController::DoRoamTick(timer::time_point tick) -> Task<void>
 
     // FFXI Offline squad: an area spell is waiting for this mate to step within reach of the player
     if (StepInTick())
+    {
+        co_return;
+    }
+
+    // XI: Forever Offline (B9): walking in to cast a chat request (a Raise on a body out of reach)
+    if (ApproachTick())
     {
         co_return;
     }
@@ -1728,6 +1766,7 @@ auto CTrustController::StepInTick() -> bool
     if (radius <= 0.0f || POwner->isDead())
     {
         m_StepInSpell = SpellID::None;
+        DeferResult(spellid, static_cast<uint8>(squad::castapproach::State::Failed), static_cast<uint8>(squad::castapproach::Why::Target));
         return false;
     }
 
@@ -1738,8 +1777,11 @@ auto CTrustController::StepInTick() -> bool
         m_StepInSpell = SpellID::None;
         POwner->PAI->PathFind->Clear();
         m_StepInCasting = true;
-        Cast(EntityId(POwner), spellid);
-        m_StepInCasting = false;
+        // (B11, 2026-11-27) the outcome is kept for a chat request that is waiting on it (it was dropped: an "On it" with no cast)
+        const bool started = Cast(EntityId(POwner), spellid);
+        m_StepInCasting    = false;
+        DeferResult(spellid, static_cast<uint8>(started ? squad::castapproach::State::Cast : squad::castapproach::State::Failed),
+                    static_cast<uint8>(started ? squad::castapproach::Why::None : squad::castapproach::Why::Busy));
         return true;
     }
 
@@ -1768,6 +1810,90 @@ auto CTrustController::StepInTick() -> bool
     }
 
     return true;
+}
+
+// (B9 / B11) the outcome of a chat cast that did not start at once: the Lua side (squad_requests.lua) polls these
+void CTrustController::DeferResult(const SpellID spellid, const uint8 state, const uint8 why)
+{
+    POwner->SetLocalVar(squad::castapproach::VarSpell, static_cast<uint32>(spellid));
+    POwner->SetLocalVar(squad::castapproach::VarState, state);
+    POwner->SetLocalVar(squad::castapproach::VarWhy, why);
+}
+
+auto CTrustController::StartApproach(const EntityId& target, const SpellID spellid) -> bool
+{
+    if (m_ApproachSpell != SpellID::None)
+    {
+        return false;
+    }
+
+    m_ApproachSpell  = spellid;
+    m_ApproachTarget = target;
+    m_ApproachSince  = m_Tick;
+    DeferResult(spellid, static_cast<uint8>(squad::castapproach::State::Waiting), 0);
+    return true;
+}
+
+// (B9) one roam tick of the walk toward a chat request's target; everything is checked again before the cast. true while
+// it walks (the rest of the roam tick waits).
+auto CTrustController::ApproachTick() -> bool
+{
+    namespace ca = squad::castapproach;
+    if (m_ApproachSpell == SpellID::None)
+    {
+        return false;
+    }
+
+    const SpellID spellid = m_ApproachSpell;
+    CSpell*       PSpell  = spell::GetSpell(spellid);
+    auto*         PTarget = m_ApproachTarget.resolve<CBattleEntity>();
+    auto*         PMaster = static_cast<CCharEntity*>(POwner->PMaster);
+    const bool    forDead = PSpell != nullptr && (PSpell->getValidTarget() & TARGET_PLAYER_DEAD) != 0;
+
+    ca::StepFacts facts;
+    facts.targetOk   = PSpell != nullptr && PTarget != nullptr && !POwner->isDead() && PTarget->getZone() == POwner->getZone() &&
+                     PTarget->isDead() == forDead;
+    facts.fighting   = POwner->PAI->IsEngaged() || (PMaster != nullptr && PMaster->PAI->IsEngaged());
+    facts.spellReady = facts.targetOk && static_cast<CTrustEntity*>(POwner)->SpellContainer->GetAvailable(spellid).has_value() &&
+                       !POwner->PRecastContainer->Has(xi::RecastType::Magic, static_cast<xi::Recast>(spellid));
+    facts.canMove    = POwner->GetSpeed() > 0 && POwner->PAI->CanFollowPath();
+    facts.elapsedSec = static_cast<int>(std::chrono::duration_cast<std::chrono::seconds>(m_Tick - m_ApproachSince).count());
+    if (facts.targetOk)
+    {
+        facts.dist  = distance(POwner->loc.p, PTarget->loc.p);
+        facts.reach = ca::Reach(PSpell->getRange(), PTarget->modelHitboxSize, POwner->modelHitboxSize);
+    }
+
+    const auto next = ca::Next(facts);
+    if (next.step == ca::Step::Walk)
+    {
+        if (!POwner->PAI->PathFind->IsFollowingPath() &&
+            !POwner->PAI->PathFind->PathAround(PTarget->loc.p, std::max(1.0f, facts.reach - 2.0f), PATHFLAG_RUN))
+        {
+            POwner->PAI->PathFind->StepToOnMesh(PTarget->loc.p, true);
+        }
+
+        if (POwner->PAI->PathFind->IsFollowingPath())
+        {
+            POwner->PAI->PathFind->FollowPath(m_Tick);
+        }
+
+        return true;
+    }
+
+    m_ApproachSpell = SpellID::None;
+    m_ApproachTarget.clean();
+    POwner->PAI->PathFind->Clear();
+    if (next.step == ca::Step::Cast)
+    {
+        const bool started = Cast(PTarget->entityId(), spellid);
+        DeferResult(spellid, static_cast<uint8>(started ? ca::State::Cast : ca::State::Failed),
+                    static_cast<uint8>(started ? ca::Why::None : ca::Why::Busy));
+        return started;
+    }
+
+    DeferResult(spellid, static_cast<uint8>(ca::State::Failed), static_cast<uint8>(next.why));
+    return false;
 }
 
 auto CTrustController::GetTopEnmity() const -> CBattleEntity*

@@ -29,7 +29,8 @@ St.MAX_NAME      = 24
 
 -- ---------------------------------------------------------------- serialising (deterministic, so rev() is stable)
 local SET_KEYS  = { 'format', 'version', 'num', 'id', 'name', 'job', 'owner', 'readonly', 'rules' }
-local RULE_KEYS = { 'id', 'on', 'target', 'include', 'exclude', 'cond', 'cond2', 'action', 'retry', 'level' } -- (0.3.3: include / exclude roles)
+-- (0.3.3: include / exclude roles; F22, 2026-11-27: conds, the list that replaces cond / cond2 when a rule needs it; F18: wake)
+local RULE_KEYS = { 'id', 'on', 'target', 'include', 'exclude', 'cond', 'cond2', 'conds', 'action', 'retry', 'level', 'wake' }
 local STORE_KEYS = { 'format', 'version', 'sets' }
 
 local function isArray(t)
@@ -158,7 +159,7 @@ end
 local function keysFor(_, t)
     if t.rules ~= nil or t.num ~= nil then
         return SET_KEYS
-    elseif t.action ~= nil or t.cond ~= nil or t.target ~= nil then
+    elseif t.action ~= nil or t.cond ~= nil or t.conds ~= nil or t.target ~= nil then
         return RULE_KEYS
     elseif t.sets ~= nil then
         return STORE_KEYS

@@ -27,6 +27,7 @@
 #include <common/types/hash_map.h>
 
 #include "gambits_backoff.h"
+#include "squad_add_target.h"
 
 #include "ai/ai_container.h"
 #include "ai/controllers/trust_controller.h"
@@ -62,6 +63,9 @@ enum class G_TARGET : uint16
     TRIGGER_SELF_ACTION_TARGET = 12,
     TRIGGER_TARGET_ACTION_SELF = 13,
     PARTY_LOWEST_HPP           = 14, // XI: Forever Offline: the living party member in range with the lowest HP% that matches
+    // XI: Forever Offline (F21, 2026-11-27): the nearest awake add: a monster fighting the party that is not the party's
+    // combat target, within the rule's spell reach, not reserved by another mate (squad_add_target.h)
+    ENEMY_ADD                  = 15,
 };
 
 enum class G_LOGIC : uint16
@@ -133,6 +137,12 @@ enum class G_CONDITION : uint16
     //   included; monsters that are only standing nearby are not. 0 with no enemy.
     PARTY_COUNT        = 45,
     ENEMY_COUNT        = 46,
+    // XI: Forever Offline (F20, 2026-11-27): the target has an effect Erase can remove now (CStatusEffectContainer::
+    // HasErasableEffect: the Erasable flag and a duration, so a permanent effect never triggers it). No argument.
+    ERASABLE           = 47,
+    // XI: Forever Offline (F18, 2026-11-27): always true; marks a rule "Wake to act": a mate resting in a fight runs only
+    // these rules (squad.lua adds it to a Rule Set rule with wake = true). An older xi_map makes it false: the rule never runs.
+    WAKE               = 48,
 };
 
 enum class G_REACTION : uint16
@@ -343,7 +353,8 @@ public:
     void RemoveGambit(const std::string& id);
     void RemoveAllGambits();
     // supportOnly (XI: Forever Offline, B3b): out of combat, only the support rules (gambits_support.h)
-    auto Tick(timer::time_point tick, bool supportOnly = false) -> Task<void>;
+    // wakeOnly (F18): resting in a fight, only the rules marked "Wake to act" (G_CONDITION::WAKE); one that acts stands the mate up for that action only
+    auto Tick(timer::time_point tick, bool supportOnly = false, bool wakeOnly = false) -> Task<void>;
 
     // TODO: make private
     std::vector<TrustSkill_t> tp_skills;
@@ -361,7 +372,10 @@ private:
     auto InWeaponSkillRange(const CWeaponSkill* PWeaponSkill, const CBattleEntity* target) const -> bool;
     auto PartyHasHealer() -> bool;
     auto PartyHasTank() -> bool;
-    auto BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>; // XI: Forever Offline (job expansion): MB_ELEMENT
+    auto BestBurstSpell(CBattleEntity* target, uint32 maxTier = 0) -> Maybe<SpellID>; // XI: Forever Offline (job expansion): MB_ELEMENT; (F10) tier cap
+    // XI: Forever Offline (F21, 2026-11-27): the add for an ENEMY_ADD rule (squad_add_target.h), or nullptr
+    auto PickAdds(float reach) -> std::vector<CBattleEntity*>; // eligible adds, nearest first
+    HashMap<uint32, squad::addtarget::Tries> m_AddTries;        // (F21) this caster's tries per add (the resist backoff)
     auto EstimatedCastTime(CSpell* PSpell) const -> timer::duration;
     auto HoldWeaponSkill(CBattleEntity* target) -> bool; // XI: Forever Offline (job expansion): squad SA/TA before a WS
     // XI: Forever Offline (2026-11-23, final batch, gambits_sata.h)

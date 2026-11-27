@@ -23,6 +23,7 @@
 #include "gambits_reach.h"
 #include "gambits_sata.h"
 #include "gambits_support.h"
+#include "squad_cond_subject.h"
 #include "squad_threat.h"
 
 #include "ability.h"
@@ -123,6 +124,23 @@ static_assert(gambits::support::ConditionStatus == static_cast<uint16_t>(G_CONDI
 constexpr float  PartyCountReach  = 20.0f;
 constexpr uint32 PartyCountAsleep = 0xFFFE;
 
+// XI: Forever Offline (F18): a rule marked "Wake to act" (it has the always-true WAKE condition)
+auto IsWakeGambit(const Gambit_t& gambit) -> bool
+{
+    for (const auto& group : gambit.predicate_groups)
+    {
+        for (const auto& predicate : group.predicates)
+        {
+            if (squad::condsubject::BaseOf(static_cast<uint16_t>(predicate.condition)) == static_cast<uint16_t>(G_CONDITION::WAKE))
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 auto IsSupportGambit(const Gambit_t& gambit) -> bool
 {
     bool anyStatus = false;
@@ -130,7 +148,8 @@ auto IsSupportGambit(const Gambit_t& gambit) -> bool
     {
         for (const auto& predicate : group.predicates)
         {
-            anyStatus = anyStatus || support::IsStatusCondition(static_cast<uint16_t>(predicate.condition));
+            // (F22) a condition with a subject counts by its base condition
+            anyStatus = anyStatus || support::IsStatusCondition(squad::condsubject::BaseOf(static_cast<uint16_t>(predicate.condition)));
         }
     }
 
@@ -339,9 +358,12 @@ void CGambitsContainer::RemoveAllGambits()
     m_sataUsedAbility = 0;
 }
 
-auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnly) -> Task<void>
+auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnlyIn, const bool wakeOnly) -> Task<void>
 {
     TracyZoneScoped;
+
+    // (F18) resting in a fight works like the support pass for everything but the rule filter: no weapon skills, no SA/TA
+    const bool supportOnly = supportOnlyIn || wakeOnly;
 
     auto* controller      = static_cast<CTrustController*>(POwner->PAI->GetController());
     uint8 currentPartyPos = controller->GetPartyPosition();
@@ -444,8 +466,9 @@ auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnly) -> 
             continue;
         }
 
-        // (B3b) out of combat: the support rules only, in their written order
-        if (supportOnly && !IsSupportGambit(gambit))
+        // (B3b) out of combat: the support rules only, in their written order. (F18) resting in a fight: the "Wake to act"
+        // rules only, whatever kind they are
+        if (wakeOnly ? !IsWakeGambit(gambit) : (supportOnly && !IsSupportGambit(gambit)))
         {
             continue;
         }
@@ -672,6 +695,12 @@ auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnly) -> 
                 // clang-format on
             }
         }
+        else if (targetType == G_TARGET::ENEMY_ADD)
+        {
+            // XI: Forever Offline (F21): the awake adds within the rule's spell reach, nearest first (squad_add_target.h)
+            const float reachYalms = ruleSpell.has_value() ? ruleSpell->range + POwner->modelHitboxSize + 1.0f : 20.0f;
+            potentialTargets = PickAdds(reachYalms);
+        }
         else if (targetType == G_TARGET::CURILLA)
         {
             // clang-format off
@@ -826,7 +855,7 @@ auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnly) -> 
             {
                 // XI: Forever Offline (job expansion): the burst element, tier and timing are chosen from the real
                 // skillchain effect: see BestBurstSpell. Nothing is cast when no spell can land inside the window.
-                return BestBurstSpell(resolvedTarget);
+                return BestBurstSpell(resolvedTarget, action.select_arg); // (F10) select_arg = the tier cap, 0 none
             }
 
             return std::nullopt;
@@ -1056,7 +1085,7 @@ auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnly) -> 
                     else if (action.select == G_SELECT::MB_ELEMENT)
                     {
                         // (not reached: ResolveMA already chose the burst; kept to the same choice for safety)
-                        if (auto spell_id = BestBurstSpell(target))
+                        if (auto spell_id = BestBurstSpell(target, action.select_arg))
                         {
                             executedAnyAction = controller->Cast(target->entityId(), spell_id.value()) || executedAnyAction;
                         }
@@ -1416,6 +1445,28 @@ auto CGambitsContainer::Tick(timer::time_point tick, const bool supportOnly) -> 
             m_AreaGuard.Record(gambit.identifier, target->id, nowMs);
         }
 
+        // XI: Forever Offline (F18): a "Wake to act" rule acted while the mate rested in a fight: it stands up for this action
+        // only (2 = up for a Wake to act action). It stays out of the fight and only its Wake to act rules keep running
+        // (trust_controller.cpp); squad.lua sits it down again once the action is over. Only an action that really started.
+        if (executedAnyAction && wakeOnly)
+        {
+            POwner->SetLocalVar("SQUAD_REST_FIGHT_ON", 2);
+            POwner->SetLocalVar("SQUAD_REST_WOKE", nowSeconds());
+            POwner->animation = xi::Animation::None;
+            POwner->updatemask |= UPDATE_HP;
+        }
+
+        // XI: Forever Offline (F21): a cast on an add reserves it for this mate for a moment, and counts toward the resist
+        // backoff (a refused cast reserves nothing)
+        if (executedAnyAction && targetType == G_TARGET::ENEMY_ADD && target != nullptr)
+        {
+            namespace at = squad::addtarget;
+            const auto now = static_cast<int64_t>(nowSeconds());
+            target->SetLocalVar(at::VarBy, POwner->id);
+            target->SetLocalVar(at::VarUntil, static_cast<uint32>(now + at::ReserveSeconds));
+            m_AddTries[target->id] = at::RecordTry(m_AddTries[target->id], now);
+        }
+
         // If we executed any action and the gambit has a retry_delay, set last_used
         if (executedAnyAction && gambit.retry_delay != 0)
         {
@@ -1441,6 +1492,20 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
     for (size_t predicateIndex = 0; predicateIndex < predicateGroup.predicates.size(); ++predicateIndex)
     {
         auto& predicate = predicateGroup.predicates[predicateIndex];
+
+        // XI: Forever Offline (F22, 2026-11-27): a condition about another subject than the rule's target (squad_cond_subject.h):
+        // the mate itself, or the mate's combat target. It is read on that subject; no subject there = false.
+        if (const auto raw = static_cast<uint16_t>(predicate.condition); raw >= squad::condsubject::SubjectStep)
+        {
+            namespace cs            = squad::condsubject;
+            const auto     subject  = cs::SubjectOf(raw);
+            CBattleEntity* PSubject = subject == cs::Subject::Self ? static_cast<CBattleEntity*>(POwner) : POwner->GetBattleTarget();
+            PredicateGroup_t one(G_LOGIC::AND, { Predicate_t(static_cast<G_CONDITION>(cs::BaseOf(raw)), predicate.condition_arg) });
+            predicateResults.push_back(!cs::UnknownSubject(raw) && PSubject != nullptr && !PSubject->isDead() &&
+                                       CheckTrigger(PSubject, gambit, predicateGroupIndex, one));
+            continue;
+        }
+
         switch (predicate.condition)
         {
             case G_CONDITION::ALWAYS:
@@ -1644,6 +1709,16 @@ auto CGambitsContainer::CheckTrigger(const CBattleEntity* triggerTarget, const G
             case G_CONDITION::NOT_PT_HAS_TANK:
             {
                 predicateResults.push_back(!PartyHasTank());
+                continue;
+            }
+            case G_CONDITION::WAKE:
+            {
+                predicateResults.push_back(true); // (F18: only a marker)
+                continue;
+            }
+            case G_CONDITION::ERASABLE:
+            {
+                predicateResults.push_back(triggerTarget->StatusEffectContainer->HasErasableEffect());
                 continue;
             }
             case G_CONDITION::STATUS_FLAG:
@@ -2679,12 +2754,102 @@ auto CGambitsContainer::EstimatedCastTime(CSpell* PSpell) const -> timer::durati
 //  - of those: the element the target resists least (its *_RES_RANK), then the highest tier (the higher spell id),
 //    then the shorter cast. A weaker spell that lands inside the window beats a stronger one that would not.
 // Nothing (no cast) when no spell fits. Before, the best tier of the first burst element was cast whatever the window.
-auto CGambitsContainer::BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>
+// XI: Forever Offline (F21, 2026-11-27): the adds an ENEMY_ADD rule may act on, nearest to this mate first (squad_add_target.h)
+auto CGambitsContainer::PickAdds(const float reach) -> std::vector<CBattleEntity*>
+{
+    namespace at = squad::addtarget;
+    std::vector<CBattleEntity*> out;
+    auto*                       PMaster = dynamic_cast<CCharEntity*>(POwner->PMaster);
+    if (PMaster == nullptr)
+    {
+        return out;
+    }
+
+    // the party's combat target: yours while you fight; else the one most squad mates fight (a camp you stand back from)
+    CBattleEntity* PMain = PMaster->PAI->IsEngaged() ? PMaster->GetBattleTarget() : nullptr;
+    if (PMain == nullptr)
+    {
+        HashMap<CBattleEntity*, int> votes;
+        int                          best = 0;
+        for (auto* PTrust : PMaster->PTrusts)
+        {
+            if (PTrust != nullptr && PTrust->PAI->IsEngaged() && PTrust->GetBattleTarget() != nullptr)
+            {
+                const int n = ++votes[PTrust->GetBattleTarget()];
+                if (n > best)
+                {
+                    best  = n;
+                    PMain = PTrust->GetBattleTarget();
+                }
+            }
+        }
+    }
+
+    const auto now    = static_cast<int64_t>(nowSeconds());
+    const auto asleep = [](CBattleEntity* PMob)
+    {
+        return PMob->StatusEffectContainer->HasStatusEffect({ xi::StatusEffect::SleepI, xi::StatusEffect::SleepIi, xi::StatusEffect::Lullaby });
+    };
+
+    for (auto* PFoe : CTrustController::PartyFoes(PMaster, POwner->loc.p, reach + 10.0f))
+    {
+        if (PFoe == nullptr || PFoe->isDead())
+        {
+            continue;
+        }
+
+        auto& tries = m_AddTries[PFoe->id];
+        at::Candidate c;
+        c.asleep        = asleep(PFoe);
+        c.isMainTarget  = PFoe == PMain;
+        c.inReach       = distance(POwner->loc.p, PFoe->loc.p) <= reach + PFoe->modelHitboxSize;
+        c.reservedOther = at::ReservedByOther(PFoe->GetLocalVar(at::VarBy), PFoe->GetLocalVar(at::VarUntil), POwner->id, now);
+        c.backedOff     = at::BackedOff(tries, now);
+        if (c.asleep)
+        {
+            tries = at::Tries{}; // (asleep: the resists before do not count any more)
+        }
+
+        if (at::Eligible(c))
+        {
+            out.push_back(PFoe);
+        }
+    }
+
+    std::stable_sort(out.begin(), out.end(), [this](const CBattleEntity* a, const CBattleEntity* b)
+                     { return distance(POwner->loc.p, a->loc.p) < distance(POwner->loc.p, b->loc.p); });
+    return out;
+}
+
+// (F10, 2026-11-27) maxTier: the highest tier of a family the burst may use (1 = Fire, 2 = Fire II ...; 0 = no cap, as
+// before). The tier of a spell is its place in its family: the family's spells have consecutive ids (Fire 144-148,
+// Banish 28-30, Holy 21-22, Drain 245-246). With a cap the best spell at or below it is chosen by the same rules, so a
+// lower tier is used when the capped one is missing, short of MP, recasting, or too slow for the window.
+auto CGambitsContainer::BestBurstSpell(CBattleEntity* target, const uint32 maxTier) -> Maybe<SpellID>
 {
     if (target == nullptr || POwner->SpellContainer == nullptr)
     {
         return std::nullopt;
     }
+
+    const auto tierOf = [](CSpell* PSpell) -> uint32
+    {
+        uint32       tier   = 1;
+        const auto   family = PSpell->getSpellFamily();
+        auto         id     = static_cast<uint16>(PSpell->getID());
+        while (id > 1 && tier < 16)
+        {
+            CSpell* PLower = spell::GetSpell(static_cast<SpellID>(--id));
+            if (PLower == nullptr || PLower->getSpellFamily() != family)
+            {
+                break;
+            }
+
+            ++tier;
+        }
+
+        return tier;
+    };
 
     CStatusEffect* PSCEffect = target->StatusEffectContainer->GetStatusEffect(xi::StatusEffect::Skillchain, 0);
     if (PSCEffect == nullptr || PSCEffect->GetTier() == 0)
@@ -2768,6 +2933,11 @@ auto CGambitsContainer::BestBurstSpell(CBattleEntity* target) -> Maybe<SpellID>
                 if (PSpell == nullptr || PSpell->getSpellFamily() != family || !POwner->SpellContainer->GetAvailable(id).has_value())
                 {
                     continue;
+                }
+
+                if (maxTier > 0 && tierOf(PSpell) > maxTier)
+                {
+                    continue; // (F10) above the rule's cap
                 }
 
                 const auto cast = EstimatedCastTime(PSpell);

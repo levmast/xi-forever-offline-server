@@ -7,7 +7,8 @@
 REPLACE INTO `item_basic` (`itemid`,`subid`,`name`,`sortname`,`name_jp`,`type`,`stackSize`,`flags`,`aH`,`BaseSell`) VALUES (25725,0,'forever_beta_shirt','forever_beta_shirt','Forever Beta Shirt',6,1,64576,0,0);
 REPLACE INTO `item_equipment` (`itemId`,`name`,`level`,`ilevel`,`jobs`,`MId`,`shieldSize`,`scriptType`,`slot`,`rslot`,`rslotlook`,`su_level`) VALUES (25725,'forever_beta_shirt',1,0,4194303,399,0,0,32,0,0,0);
 REPLACE INTO `item_usable` (`itemid`,`name`,`validTargets`,`activation`,`animation`,`animationTime`,`maxCharges`,`useDelay`,`reuseDelay`,`aoe`) VALUES (25725,'forever_beta_shirt',1,1,76,0,5,15,54000,0);
-REPLACE INTO `item_mods` (`itemId`,`modId`,`value`) VALUES (25725,1,1);
+-- DEF:1, and Fishing skill +1 (mod 127) since 2026-11-25
+REPLACE INTO `item_mods` (`itemId`,`modId`,`value`) VALUES (25725,1,1),(25725,127,1);
 
 -- One more shirt for anyone who threw the first one away (2026-11-22). Until v0.1.59 the shirt showed on player installs
 -- as a nameless Lv127 item ("."), and people dropped it. Once per character: a character that was given the shirt

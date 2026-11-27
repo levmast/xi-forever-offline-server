@@ -159,7 +159,10 @@ local function freeMob(mob, bot, players, partyIds)
     end
 
     local ok, busy = pcall(function()
-        return mob:isNM() or mob:isEngaged() or mob:getTarget() ~= nil
+        -- (2026-11-26, Art-Machine) the monsters that grow into an NM when left alone (custom/late/grow_nms.lua) are
+        -- left alone by bots: a fight begins the monster's count again, and Vilma never came
+        return mob:isNM() or mob:isEngaged() or mob:getTarget() ~= nil or
+            (xi.growNm ~= nil and xi.growNm.leave ~= nil and xi.growNm.leave[mob:getID()] == true)
     end)
     if not ok or busy then
         return false
@@ -303,7 +306,10 @@ local function findCamp(zoneId, lvl, partyLvl)
     local candidates = {}
     for _, mob in ipairs(mobsOf(zone)) do
         local ml = mob:getMainLvl()
-        if ml >= lo and ml <= hi and isEnemy(mob) and mob:isAlive() and not mob:isNM() then
+        if
+            ml >= lo and ml <= hi and isEnemy(mob) and mob:isAlive() and not mob:isNM() and
+            not (xi.growNm ~= nil and xi.growNm.leave ~= nil and xi.growNm.leave[mob:getID()] == true) -- (see freeMob)
+        then
             local mp = mob:getPos()
             local far = true
             for _, p in ipairs(players) do

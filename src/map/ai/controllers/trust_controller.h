@@ -141,10 +141,27 @@ private:
     auto AreaSpellCovers(float radius) const -> bool;
     auto StepInTick() -> bool;
 
+    // XI: Forever Offline (B9, 2026-11-27): a single-target spell asked for in party chat on someone out of its reach (a Raise
+    // on a body), out of a fight: the mate walks in and casts (squad_cast_approach.h). One at a time.
+    SpellID           m_ApproachSpell = SpellID::None;
+    EntityId          m_ApproachTarget{};
+    timer::time_point m_ApproachSince;
+    auto ApproachTick() -> bool;
+
 public:
     // true while an area spell waits for its caster to step in (a spell asked for in party chat counts as started)
     auto IsSteppingIn() const -> bool
     {
         return m_StepInSpell != SpellID::None;
     }
+
+    // (B9) start walking toward `target` to cast `spellid` on it; false when another one is under way
+    auto StartApproach(const EntityId& target, SpellID spellid) -> bool;
+    auto IsApproaching() const -> bool
+    {
+        return m_ApproachSpell != SpellID::None;
+    }
+
+    // (B9 / B11) the outcome of a deferred chat cast, on this mate's local vars (squad_cast_approach.h Var*)
+    void DeferResult(SpellID spellid, uint8 state, uint8 why);
 };

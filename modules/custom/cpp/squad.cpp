@@ -67,7 +67,9 @@
 #include "map/packets/entity_update.h" // MODEL_EQUIPPED (squadRefreshLook)
 #include "map/ai/controllers/trust_controller.h"
 #include "map/ai/helpers/gambits_container.h"
+#include "map/ai/helpers/squad_cast_approach.h"
 #include "map/ai/helpers/squad_spell_kind.h"
+#include "map/ai/states/magic_state.h"
 #include "map/packets/c2s/0x032_trade_req.h"
 #include "map/packets/c2s/0x0b5_chat_std.h"
 #include "map/packets/c2s/0x036_item_transfer.h"
@@ -1529,6 +1531,9 @@ enum class SpellCastResult
     NotReady,
     NoTarget,
     Busy,
+    Far,      // (B9, 2026-11-27) a valid target out of the spell's reach, and no walking in now (a fight, a camp, too far)
+    Approach, // (B9) out of reach: the mate walks in and casts; the outcome comes on its local vars (squad_cast_approach.h)
+    StepIn,   // (B11) an area spell waits for its caster to step in; the outcome comes the same way
 };
 
 auto spellResultName(const SpellCastResult result) -> const char*
@@ -1539,6 +1544,9 @@ auto spellResultName(const SpellCastResult result) -> const char*
         case SpellCastResult::Unknown: return "unknown";
         case SpellCastResult::NotReady: return "notready";
         case SpellCastResult::NoTarget: return "notarget";
+        case SpellCastResult::Far: return "far";
+        case SpellCastResult::Approach: return "approach";
+        case SpellCastResult::StepIn: return "stepin";
         default: return "busy";
     }
 }
@@ -1608,10 +1616,47 @@ auto trySquadCast(CCharEntity* PChar, CTrustEntity* PTrust, const SpellID spellI
         return SpellCastResult::Busy;
     }
 
-    // (2026-11-22) an area spell that waits for its caster to step within reach of you is on its way: not "busy"
-    if (controller->Cast(PTarget->entityId(), spellId) || controller->IsSteppingIn())
+    // (B9, 2026-11-27) a single-target spell on someone else, out of its reach: before, the cast was refused at its start and
+    // the answer was "busy" for 12 s. Out of a fight the mate walks in (bounded, squad_cast_approach.h); otherwise "far",
+    // with the distance and the reach (tenths of a yalm) on the mate for the answer.
+    if (PTarget != PTrust && !PSpell->canTargetEnemy() && PSpell->getAOE() != SPELLAOE_RADIAL)
+    {
+        namespace ca      = squad::castapproach;
+        const float dist  = distance(PTrust->loc.p, PTarget->loc.p);
+        const float reach = ca::Reach(PSpell->getRange(), PTarget->modelHitboxSize, PTrust->modelHitboxSize);
+        if (dist > reach)
+        {
+            const bool fighting  = PTrust->PAI->IsEngaged() || PChar->PAI->IsEngaged();
+            const bool holdsCamp = PTrust->GetLocalVar("SQUAD_CAMP") != 0;
+            const auto start     = ca::Decide(dist, reach, fighting, holdsCamp);
+            if (start == ca::Start::Approach && !controller->IsApproaching() && !PTrust->PAI->IsCurrentState<CMagicState>() &&
+                controller->StartApproach(PTarget->entityId(), spellId))
+            {
+                return SpellCastResult::Approach;
+            }
+
+            if (start == ca::Start::Approach)
+            {
+                return SpellCastResult::Busy; // (another walk-in or a cast under way: asked again in a second)
+            }
+
+            PTrust->SetLocalVar("SQUAD_FAR_DIST", static_cast<uint32>(dist * 10.0f));
+            PTrust->SetLocalVar("SQUAD_FAR_REACH", static_cast<uint32>(reach * 10.0f));
+            return SpellCastResult::Far;
+        }
+    }
+
+    if (controller->Cast(PTarget->entityId(), spellId))
     {
         return SpellCastResult::Cast;
+    }
+
+    // (2026-11-22) an area spell that waits for its caster to step within reach of you is on its way: not "busy".
+    // (B11) told apart from a cast that started, so the answer can wait for the outcome
+    if (controller->IsSteppingIn())
+    {
+        controller->DeferResult(spellId, static_cast<uint8>(squad::castapproach::State::Waiting), 0);
+        return SpellCastResult::StepIn;
     }
 
     return SpellCastResult::Busy;
@@ -1957,6 +2002,29 @@ auto squadPartyFoes(CLuaBaseEntity* player, const float x, const float y, const 
     return { static_cast<int32>(foes.size()), std::string(foes.front()->getName()), static_cast<int32>(foes.front()->targid) };
 }
 
+// Lua: SquadFoesOn(mate) -> how many monsters fighting the party within 30 yalms of the mate have the mate as their target
+// (F18, 2026-11-27: a mate only rests in a fight with nothing on it)
+auto squadFoesOn(CLuaBaseEntity* mate) -> int32
+{
+    auto* PTrust = toSquadMate(mate);
+    auto* PChar  = PTrust != nullptr ? dynamic_cast<CCharEntity*>(PTrust->PMaster) : nullptr;
+    if (PChar == nullptr)
+    {
+        return 0;
+    }
+
+    int32 count = 0;
+    for (auto* PFoe : CTrustController::PartyFoes(PChar, PTrust->loc.p, 30.0f))
+    {
+        if (PFoe != nullptr && !PFoe->isDead() && PFoe->GetBattleTarget() == PTrust)
+        {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
 // Lua: SquadTryAbility(player, mate, abilityId) -> result name (cast, unknown, notready, notarget, busy)
 auto squadTryAbility(CLuaBaseEntity* player, CLuaBaseEntity* mate, const uint16 abilityId) -> std::string
 {
@@ -2238,6 +2306,10 @@ class SquadModule : public CPPModule
         ::lua.set_function("SquadCastSpell", squadCastSpell);
         ::lua.set_function("SquadSpellKind", squadSpellKind);
         ::lua.set_function("SquadPartyFoes", squadPartyFoes); // (B1) links and pets still on the party at camp
+        ::lua.set_function("SquadFoesOn", squadFoesOn);       // (F18) monsters on one mate
+        // (2026-11-27, feedback batch B7-F24) marker: this xi_map has condition subjects (F22), ERASABLE (F20), the ENEMY_ADD target
+        // (F21), the burst tier cap (F10), WAKE / rest in fights (F18) and the chat cast results far / approach / stepin (B9, B11)
+        ::lua.set_function("SquadCondSubjectEngine", []() -> int32 { return 1; });
         ::lua.set_function("SquadTryAbilityRaw", squadTryAbility);
         ::lua.set_function("GetSquad", getSquad);
         ::lua.set_function("SaveSquadMate", saveSquadMate);
